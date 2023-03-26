@@ -5,6 +5,8 @@
  * of the MIT license.  See the LICENSE file for details.
  */
 
+// NOT A STANDALONE CODE - REPASTE OR INCLUDE
+
 #define AES_BLOCKLEN 16
 #define AES_KEYLEN AES_BLOCKLEN // 128bit
 #define AES_keyExpSize 176
@@ -14,10 +16,9 @@ struct AES_ctx {
     uint8_t Iv[AES_BLOCKLEN];
 };
 
-extern int sha1digest(uint8_t* digest, char* hexdigest, const uint8_t* data, size_t databytes);
-extern void AES_CBC_decrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length);
-extern void AES_CBC_encrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length);
-extern void AES_init_ctx_iv(struct AES_ctx* ctx, const uint8_t* key, const uint8_t* iv);
+void AES_CBC_decrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length);
+void AES_CBC_encrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length);
+void AES_init_ctx_iv(struct AES_ctx* ctx, const uint8_t* key, const uint8_t* iv);
 
 void aes_cbc(uint8_t* key, uint8_t* iv, uint8_t* data, uint32_t len, int encrypt) {
     struct AES_ctx aesctx;
@@ -29,7 +30,7 @@ void aes_cbc(uint8_t* key, uint8_t* iv, uint8_t* data, uint32_t len, int encrypt
         AES_CBC_decrypt_buffer(&aesctx, data, len);
 }
 
-// SHA1 & AES-128-CBC Based on tiny-sha1.c and tiny-aescbc128.c
+// AES-128-CBC Based on tiny-aescbc128.c
 
 #define Nb 4
 #define Nk 4
@@ -333,128 +334,4 @@ void AES_CBC_decrypt_buffer(struct AES_ctx* ctx, uint8_t* buf, size_t length) {
         buf += AES_BLOCKLEN;
     }
 
-}
-
-int sha1digest(uint8_t* digest, char* hexdigest, const uint8_t* data, size_t databytes) {
-#define SHA1ROTATELEFT(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
-
-    uint32_t W[80];
-    uint32_t H[] = { 0x67452301,
-                    0xEFCDAB89,
-                    0x98BADCFE,
-                    0x10325476,
-                    0xC3D2E1F0 };
-    uint32_t a;
-    uint32_t b;
-    uint32_t c;
-    uint32_t d;
-    uint32_t e;
-    uint32_t f = 0;
-    uint32_t k = 0;
-
-    uint32_t idx;
-    uint32_t lidx;
-    uint32_t widx;
-    uint32_t didx = 0;
-
-    int32_t wcount;
-    uint32_t temp;
-    uint64_t databits = ((uint64_t)databytes) * 8;
-    uint32_t loopcount = (databytes + 8) / 64 + 1;
-    uint32_t tailbytes = 64 * loopcount - databytes;
-    uint8_t datatail[128] = { 0 };
-
-    if (!digest && !hexdigest)
-        return -1;
-
-    if (!data)
-        return -1;
-
-    datatail[0] = 0x80;
-    datatail[tailbytes - 8] = (uint8_t)(databits >> 56 & 0xFF);
-    datatail[tailbytes - 7] = (uint8_t)(databits >> 48 & 0xFF);
-    datatail[tailbytes - 6] = (uint8_t)(databits >> 40 & 0xFF);
-    datatail[tailbytes - 5] = (uint8_t)(databits >> 32 & 0xFF);
-    datatail[tailbytes - 4] = (uint8_t)(databits >> 24 & 0xFF);
-    datatail[tailbytes - 3] = (uint8_t)(databits >> 16 & 0xFF);
-    datatail[tailbytes - 2] = (uint8_t)(databits >> 8 & 0xFF);
-    datatail[tailbytes - 1] = (uint8_t)(databits >> 0 & 0xFF);
-
-    for (lidx = 0; lidx < loopcount; lidx++) {
-
-        memset(W, 0, 80 * sizeof(uint32_t));
-
-        for (widx = 0; widx <= 15; widx++) {
-            wcount = 24;
-
-            while (didx < databytes && wcount >= 0) {
-                W[widx] += (((uint32_t)data[didx]) << wcount);
-                didx++;
-                wcount -= 8;
-            }
-
-            while (wcount >= 0) {
-                W[widx] += (((uint32_t)datatail[didx - databytes]) << wcount);
-                didx++;
-                wcount -= 8;
-            }
-        }
-
-        for (widx = 16; widx <= 31; widx++) {
-            W[widx] = SHA1ROTATELEFT((W[widx - 3] ^ W[widx - 8] ^ W[widx - 14] ^ W[widx - 16]), 1);
-        }
-        for (widx = 32; widx <= 79; widx++) {
-            W[widx] = SHA1ROTATELEFT((W[widx - 6] ^ W[widx - 16] ^ W[widx - 28] ^ W[widx - 32]), 2);
-        }
-
-        a = H[0];
-        b = H[1];
-        c = H[2];
-        d = H[3];
-        e = H[4];
-
-        for (idx = 0; idx <= 79; idx++) {
-            if (idx <= 19) {
-                f = (b & c) | ((~b) & d);
-                k = 0x5A827999;
-            } else if (idx >= 20 && idx <= 39) {
-                f = b ^ c ^ d;
-                k = 0x6ED9EBA1;
-            } else if (idx >= 40 && idx <= 59) {
-                f = (b & c) | (b & d) | (c & d);
-                k = 0x8F1BBCDC;
-            } else if (idx >= 60 && idx <= 79) {
-                f = b ^ c ^ d;
-                k = 0xCA62C1D6;
-            }
-            temp = SHA1ROTATELEFT(a, 5) + f + e + k + W[idx];
-            e = d;
-            d = c;
-            c = SHA1ROTATELEFT(b, 30);
-            b = a;
-            a = temp;
-        }
-
-        H[0] += a;
-        H[1] += b;
-        H[2] += c;
-        H[3] += d;
-        H[4] += e;
-    }
-
-    if (digest) {
-        for (idx = 0; idx < 5; idx++) {
-            digest[idx * 4 + 0] = (uint8_t)(H[idx] >> 24);
-            digest[idx * 4 + 1] = (uint8_t)(H[idx] >> 16);
-            digest[idx * 4 + 2] = (uint8_t)(H[idx] >> 8);
-            digest[idx * 4 + 3] = (uint8_t)(H[idx]);
-        }
-    }
-
-    if (hexdigest) {
-        snprintf(hexdigest, 41, "%08x%08x%08x%08x%08x",
-            H[0], H[1], H[2], H[3], H[4]);
-    }
-
-    return 0;
 }

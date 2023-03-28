@@ -23,6 +23,7 @@
 #define ALIGN16(v) ((v + 0xf) & 0xfffffff0)
 
 // """""random""""" 64 bits
+// requires a set rng seed (srand(seed))
 uint64_t getNoise(void) {
     uint8_t noise[8];
     uint8_t c_time[8];
@@ -82,15 +83,13 @@ uint32_t findEntryDataSize(uint32_t encryptedEntryDataSize, char* entryName, uin
 }
 
 // create an entry
-uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, void* inData, void* outData) {
-    srand(time(NULL));
+uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, void* entryStart, void** newEntryStart) {
+    srand(time(NULL)); // TODO: seed as uarg?
     int randomBlockSize = (rand() % RANDOM_BLOCK_MAX_SIZE) + 1;
     uint32_t entrySize = ALIGN16(entryDataSize) + sizeof(entry_t) + randomBlockSize;
-    void* entry = malloc(entrySize);
-    if (!entry)
-        return -1;
+    void* entry = entryStart + (RANDOM_BLOCK_MAX_SIZE - randomBlockSize);
 
-    // add a random data block of random size <= 0x600 before the actual entry
+    // add a random data block of random size <= RANDOM_BLOCK_MAX_SIZE before the actual entry
     uint8_t randomBlockKey[16], randomBlockIV[16];
     *(uint64_t*)randomBlockKey = getNoise();
     *(uint64_t*)(randomBlockKey + 8) = getNoise();
@@ -108,19 +107,17 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, vo
     // add the decrypted data and encrypt it there
     uint8_t dataKey[16], dataIV[16];
     void* entryData = entry + randomBlockSize + sizeof(entry_t);
-    memset(entryData, 0, entryDataSize);
-    memcpy(entryData, inData, entryDataSize);
     calculateDataKey(password, dataKey, dataIV, entryHead);
     aes_cbc(dataKey, dataIV, entryData, ALIGN16(entryDataSize), 1);
-    memcpy(outData, entry, entrySize);
-    
+
     // cleanup
-    memset(entry, 0xFF, entrySize);
-    free(entry);
     memset(randomBlockKey, 0xFF, 16);
     memset(randomBlockIV, 0xFF, 16);
     memset(dataKey, 0xFF, 16);
     memset(dataIV, 0xFF, 16);
+
+    // ret
+    *newEntryStart = entry;
 
     return entrySize;
 }
@@ -130,17 +127,23 @@ int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
     FILE* fp = NULL;
     uint32_t fileSize = 0;
     void* fileData = NULL;
+    
+    void* entry = malloc(RANDOM_BLOCK_MAX_SIZE + sizeof(entry_t));
+    if (!entry)
+        return -2;
+    
     if (iput == IPUT_FILE) { // read the data from a file
         fp = fopen(name, "rb");
         if (!fp)
             return -1;
         fseek(fp, 0L, SEEK_END);
         fileSize = ftell(fp);
-        fileData = malloc(fileSize);
-        if (!fileData) {
+        entry = realloc(entry, ALIGN16(fileSize) + RANDOM_BLOCK_MAX_SIZE + sizeof(entry_t));
+        if (!entry) {
             fclose(fp);
             return -2;
         }
+        fileData = entry + RANDOM_BLOCK_MAX_SIZE + sizeof(entry_t);
         memset(fileData, 0, fileSize);
         fseek(fp, 0L, SEEK_SET);
         fread(fileData, fileSize, 1, fp);
@@ -148,42 +151,35 @@ int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
     } else { // read the data from stdin
         void* tmp_p = NULL;
         uint32_t tmp_l = 0;
-        fileData = malloc(STDIN_BUF_INCR);
-        if (!fileData)
+        entry = realloc(entry, STDIN_BUF_INCR + RANDOM_BLOCK_MAX_SIZE + sizeof(entry_t));
+        if (!entry)
             return -2;
-        memset(fileData, 0, STDIN_BUF_INCR);
+        fileData = entry + RANDOM_BLOCK_MAX_SIZE + sizeof(entry_t);
+        // memset(fileData, 0, STDIN_BUF_INCR); // dont memset, helps the random block
         while (tmp_l = read(fileno(stdin), fileData + fileSize, STDIN_BUF_INCR), tmp_l == STDIN_BUF_INCR) {
             fileSize += STDIN_BUF_INCR;
-            tmp_p = realloc(fileData, fileSize + STDIN_BUF_INCR);
+            tmp_p = realloc(entry, fileSize + STDIN_BUF_INCR + RANDOM_BLOCK_MAX_SIZE + sizeof(entry_t));
             if (!tmp_p) {
                 memset(fileData, 0xFF, fileSize);
                 return -2;
             }
-            fileData = tmp_p;
-            memset(fileData + fileSize, 0, STDIN_BUF_INCR);
+            entry = tmp_p;
+            fileData = entry + RANDOM_BLOCK_MAX_SIZE + sizeof(entry_t);
+            // memset(fileData + fileSize, 0, STDIN_BUF_INCR); // dont memset, helps the random block
         }
         fileSize += tmp_l;
         if (!fileSize) {
-            free(fileData);
+            free(entry);
             return -2;
         }
     }
 
-     // prep entry mem
-    void* entry = malloc(fileSize + RANDOM_BLOCK_MAX_SIZE + sizeof(entry_t));
-    if (!entry) {
-        memset(fileData, 0xFF, fileSize);
-        free(fileData);
-        return -2;
-    }
-    memset(entry, 0, fileSize + RANDOM_BLOCK_MAX_SIZE + sizeof(entry_t));
-
     // create the entry
-    uint32_t entrySize = createEntry(fileSize, password, name, fileData, entry);
-    memset(fileData, 0xFF, fileSize);
-    free(fileData);
+    void* entryBlock = entry; // lord forgive me
+    uint32_t entrySize = createEntry(fileSize, password, name, entry, &entry);
     if (entrySize == 0xFFFFFFFF) {
-        free(entry);
+        memset(fileData, 0xFF, fileSize);
+        free(entryBlock);
         return -3;
     }
 
@@ -191,7 +187,8 @@ int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
     if (ouput == OUPUT_FILE) { // append entry to file
         fp = fopen(pak, "ab");
         if (!fp) {
-            free(entry);
+            memset(entry, 0xFF, entrySize);
+            free(entryBlock);
             return -4;
         }
         fwrite(entry, entrySize, 1, fp);
@@ -207,7 +204,7 @@ int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
         fclose(fp);
     }
     memset(entry, 0xFF, entrySize);
-    free(entry);
+    free(entryBlock);
 
     return 0;
 }
@@ -264,16 +261,14 @@ int getEntry(char* name, char* password, char* pak, int iput, int ouput) {
     }
     entry_t* entry = pakData + entryOffset;
 
-    // find the entry size & alloc a block for it
+    // data to decrypt
+    void* entryData = (void*)entry + sizeof(entry_t);
+
+    // find the entry size
     uint32_t entryDataSize = findEntryDataSize(entry->enc_size, name, pakSize - entryOffset);
     if (entryDataSize >= (pakSize - entryOffset)) {
         free(pakData);
         return -4;
-    }
-    void* entryData = malloc(ALIGN16(entryDataSize));
-    if (!entryData) {
-        free(pakData);
-        return -5;
     }
 
     if (ouput == OUPUT_FILE) {
@@ -281,14 +276,9 @@ int getEntry(char* name, char* password, char* pak, int iput, int ouput) {
         fp = fopen(name, "wb");
         if (!fp) {
             free(pakData);
-            free(entryData);
             return -6;
         }
     }
-
-    // copy data to decrypt
-    memset(entryData, 0, ALIGN16(entryDataSize));
-    memcpy(entryData, (void*)entry + sizeof(entry_t), ALIGN16(entryDataSize));
 
     // calculate keys & decrypt the data
     uint8_t dataKey[16], dataIV[16];
@@ -314,9 +304,9 @@ int getEntry(char* name, char* password, char* pak, int iput, int ouput) {
             fclose(fp);
         }
     }
-    free(pakData);
+    
     memset(entryData, 0xFF, ALIGN16(entryDataSize));
-    free(entryData);
+    free(pakData);
     memset(dataKey, 0xFF, 16);
     memset(dataIV, 0xFF, 16);
 

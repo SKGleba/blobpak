@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 skgleba
+ * Copyright (C) 2022-2023 skgleba
  *
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
@@ -13,7 +13,7 @@
 #define STDIN_BUF_INCR 0x200
 #define RANDOM_BLOCK_MAX_SIZE 0x600
 
-#define VER_STRING "blobpak v1.1 by skgleba"
+#define VER_STRING "blobpak v1.2 by skgleba"
 
 typedef struct entry_t {
     unsigned char entryID[ENC_ENTRY_ID_SIZE];

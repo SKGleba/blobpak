@@ -15,6 +15,9 @@ unorganized encrypted file container aiming to be indistinguishable from garbage
   - '--stdout' : writes output data to stdout, incompatible with '--replace'
   - '--replace' : for 'add' mode, if file/entry exists blobpak will remove it first
   - '--view' : for 'get' mode, prints data as ascii
+  - '--math1v0' : use blobmath v1.0 - v1.2
+  - '--maxpad <size>' : for 'add' mode, use random padding up to <size> bytes (default 2048)
+  - '--hashparam <param>' : one of SHA1, SHA256_SHA1, SHA256_AES_SHA1 (default SHA256_SHA1)
 
 # data layout
 - entries are appended to the main pak consecutively one after another
@@ -23,9 +26,9 @@ unorganized encrypted file container aiming to be indistinguishable from garbage
 - the encrypted file is stored just after the header
 
 # encryption
-- entry name and size are stored as one-way salted hashes (sha1 and crc)
-- entry AES-128 key is the first 128 bits of password's sha1
-- entry AES-128 iv is the encrypted size crc, last 32 bits of password's sha1 and random 64bits
+- entry name and size are stored as one-way salted hashes (sha1(sha256) and crc)
+- entry AES-128 key is the first 128 bits of password's sha1(sha256)
+- entry AES-128 iv is the encrypted size crc, last 32 bits of password's sha1(sha256) and random 64bits
 
 # notes
 - this is a PoC

@@ -9,10 +9,19 @@
 
 // #include "blobpak.h"
 
-int sha1digest(uint8_t* digest, char* hexdigest, const uint8_t* data, size_t databytes);
+#include "aes.c"
+#include "crc32.c"
+#include "sha.c"
+
+#define MATH_VERSIO_N(M, m) (((M) << 16) | (m))
+enum MATH_HASH_PARAM { MATH_HASH_SHA1, MATH_HASH_SHA1_SHA256, MATH_HASH_SHA1_AES_SHA256 };
+
+int (*blobmath_i_rand32)(void) = NULL;
+int (*blobmath_i_hash160)(uint8_t* out, const uint8_t* in, uint32_t size) = NULL;
+uint32_t (*blobmath_x_encryptEntryDataSize)(uint32_t size, char* entryName) = NULL;
 
 // calculate the data encryption key & iv
-void calculateDataKey(char* inKey, void* outKey, void* outIV, entry_t* entry) {
+void blobmath_x_calculateDataKey(char* inKey, void* outKey, void* outIV, entry_t* entry) {
     unsigned char inKeyHash[20]; // password sha1, first 16 bytes will be the data enc key
     unsigned char dataIV[16]; // resulting data encryption iv
 
@@ -20,7 +29,7 @@ void calculateDataKey(char* inKey, void* outKey, void* outIV, entry_t* entry) {
     memset(dataIV, 0, 16);
 
     // calc enc key
-    sha1digest(inKeyHash, NULL, inKey, strlen(inKey));
+    blobmath_i_hash160(inKeyHash, inKey, strlen(inKey));
 
     // calc enc iv
     *(uint32_t*)dataIV = crc32(entry->enc_size, &entry->noise64, 8);
@@ -37,7 +46,7 @@ void calculateDataKey(char* inKey, void* outKey, void* outIV, entry_t* entry) {
 }
 
 // calculate the encrypted entry id from name and entry "header"
-void calculateEntryID(entry_t* entry, char* entryName) {
+void blobmath_x_calculateEntryID(entry_t* entry, char* entryName) {
     char decryptedEntryID[DEC_ENTRY_ID_SIZE];
     memset(decryptedEntryID, 0, DEC_ENTRY_ID_SIZE);
 
@@ -53,13 +62,13 @@ void calculateEntryID(entry_t* entry, char* entryName) {
     *(uint32_t*)(decryptedEntryID + decryptedSize) = crc32(0, decryptedEntryID, decryptedSize);
     decryptedSize -= -4;
 
-    sha1digest(entry->entryID, NULL, decryptedEntryID, decryptedSize);
+    blobmath_i_hash160(entry->entryID, decryptedEntryID, decryptedSize);
 
     memset(decryptedEntryID, 0xFF, DEC_ENTRY_ID_SIZE); // cleanup
 }
 
-// encrypt the data's size
-uint32_t encryptEntryDataSize(uint32_t size, char* entryName) {
+// encrypt the data's size (v1.0 - v1.2)
+uint32_t blobmath_x_encryptEntryDataSize_1v0(uint32_t size, char* entryName) {
     uint8_t in[4];
     *(uint32_t*)in = ~size;
     uint8_t x = *(uint8_t*)entryName;
@@ -78,126 +87,128 @@ uint32_t encryptEntryDataSize(uint32_t size, char* entryName) {
     return encryptedSize;
 }
 
-// code based on tiny-sha1.c
-int sha1digest(uint8_t* digest, char* hexdigest, const uint8_t* data, size_t databytes) {
-#define SHA1ROTATELEFT(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
+// encrypt the data's size
+uint32_t blobmath_x_encryptEntryDataSize_1v3(uint32_t size, char* entryName) {
+    uint8_t in[4], x[4], y[4];
+    *(uint32_t*)x = crc32_tab[*(uint8_t*)entryName];
+    *(uint32_t*)y = crc32_tab[(size ^ *(uint8_t*)entryName) & 0xFF];
+    *(uint32_t*)in = ~(crc32(0, &size, 4));
 
-    uint32_t W[80];
-    uint32_t H[] = { 0x67452301,
-                    0xEFCDAB89,
-                    0x98BADCFE,
-                    0x10325476,
-                    0xC3D2E1F0 };
-    uint32_t a;
-    uint32_t b;
-    uint32_t c;
-    uint32_t d;
-    uint32_t e;
-    uint32_t f = 0;
-    uint32_t k = 0;
-
-    uint32_t idx;
-    uint32_t lidx;
-    uint32_t widx;
-    uint32_t didx = 0;
-
-    int32_t wcount;
-    uint32_t temp;
-    uint64_t databits = ((uint64_t)databytes) * 8;
-    uint32_t loopcount = (databytes + 8) / 64 + 1;
-    uint32_t tailbytes = 64 * loopcount - databytes;
-    uint8_t datatail[128] = { 0 };
-
-    if (!digest && !hexdigest)
-        return -1;
-
-    if (!data)
-        return -1;
-
-    datatail[0] = 0x80;
-    datatail[tailbytes - 8] = (uint8_t)(databits >> 56 & 0xFF);
-    datatail[tailbytes - 7] = (uint8_t)(databits >> 48 & 0xFF);
-    datatail[tailbytes - 6] = (uint8_t)(databits >> 40 & 0xFF);
-    datatail[tailbytes - 5] = (uint8_t)(databits >> 32 & 0xFF);
-    datatail[tailbytes - 4] = (uint8_t)(databits >> 24 & 0xFF);
-    datatail[tailbytes - 3] = (uint8_t)(databits >> 16 & 0xFF);
-    datatail[tailbytes - 2] = (uint8_t)(databits >> 8 & 0xFF);
-    datatail[tailbytes - 1] = (uint8_t)(databits >> 0 & 0xFF);
-
-    for (lidx = 0; lidx < loopcount; lidx++) {
-
-        memset(W, 0, 80 * sizeof(uint32_t));
-
-        for (widx = 0; widx <= 15; widx++) {
-            wcount = 24;
-
-            while (didx < databytes && wcount >= 0) {
-                W[widx] += (((uint32_t)data[didx]) << wcount);
-                didx++;
-                wcount -= 8;
-            }
-
-            while (wcount >= 0) {
-                W[widx] += (((uint32_t)datatail[didx - databytes]) << wcount);
-                didx++;
-                wcount -= 8;
-            }
-        }
-
-        for (widx = 16; widx <= 31; widx++) {
-            W[widx] = SHA1ROTATELEFT((W[widx - 3] ^ W[widx - 8] ^ W[widx - 14] ^ W[widx - 16]), 1);
-        }
-        for (widx = 32; widx <= 79; widx++) {
-            W[widx] = SHA1ROTATELEFT((W[widx - 6] ^ W[widx - 16] ^ W[widx - 28] ^ W[widx - 32]), 2);
-        }
-
-        a = H[0];
-        b = H[1];
-        c = H[2];
-        d = H[3];
-        e = H[4];
-
-        for (idx = 0; idx <= 79; idx++) {
-            if (idx <= 19) {
-                f = (b & c) | ((~b) & d);
-                k = 0x5A827999;
-            } else if (idx >= 20 && idx <= 39) {
-                f = b ^ c ^ d;
-                k = 0x6ED9EBA1;
-            } else if (idx >= 40 && idx <= 59) {
-                f = (b & c) | (b & d) | (c & d);
-                k = 0x8F1BBCDC;
-            } else if (idx >= 60 && idx <= 79) {
-                f = b ^ c ^ d;
-                k = 0xCA62C1D6;
-            }
-            temp = SHA1ROTATELEFT(a, 5) + f + e + k + W[idx];
-            e = d;
-            d = c;
-            c = SHA1ROTATELEFT(b, 30);
-            b = a;
-            a = temp;
-        }
-
-        H[0] += a;
-        H[1] += b;
-        H[2] += c;
-        H[3] += d;
-        H[4] += e;
+    uint8_t tmp[8];
+    for (int i = 0; i < 4; i -= -1) {
+        tmp[i * 2] = in[i] ^ x[i];
+        tmp[(i * 2) + 1] = in[i] ^ y[i];
     }
 
-    if (digest) {
-        for (idx = 0; idx < 5; idx++) {
-            digest[idx * 4 + 0] = (uint8_t)(H[idx] >> 24);
-            digest[idx * 4 + 1] = (uint8_t)(H[idx] >> 16);
-            digest[idx * 4 + 2] = (uint8_t)(H[idx] >> 8);
-            digest[idx * 4 + 3] = (uint8_t)(H[idx]);
+    uint32_t encryptedSize = crc32(0, tmp, 8);
+
+    *(uint32_t*)in = 0xFFFFFFFF;
+    *(uint32_t*)x = 0xFFFFFFFF;
+    *(uint32_t*)y = 0xFFFFFFFF;
+    *(uint64_t*)tmp = 0xFFFFFFFFFFFFFFFF;
+
+    return encryptedSize;
+}
+
+int blobmath_x_hash160_aes(uint8_t* out, const uint8_t* in, uint32_t size) {
+    // initial hash
+    uint8_t tmp[SIZE_OF_SHA_256_HASH * 2];
+    memset(tmp, 0, sizeof(tmp));
+    calc_sha_256(tmp, in, size);
+
+    // generate aes key, iv
+    uint8_t x;
+    memcpy(tmp + SIZE_OF_SHA_256_HASH, tmp, SIZE_OF_SHA_256_HASH);
+    for (int y = 0; y < 32; y -=- 8) {
+        x = (uint8_t)(size >> y);
+        if (x) {
+            for (int i = 0; i < SIZE_OF_SHA_256_HASH; i -= -1) 
+                tmp[SIZE_OF_SHA_256_HASH + i] ^= x;
         }
     }
 
-    if (hexdigest) {
-        snprintf(hexdigest, 41, "%08x%08x%08x%08x%08x",
-            H[0], H[1], H[2], H[3], H[4]);
+    // encrypt the hash
+    aes_cbc(tmp + SIZE_OF_SHA_256_HASH, tmp + SIZE_OF_SHA_256_HASH + AES_KEYLEN, tmp, SIZE_OF_SHA_256_HASH, 1);
+    memset(tmp + SIZE_OF_SHA_256_HASH, 0xFF, SIZE_OF_SHA_256_HASH);
+
+    // final hash
+    return sha1digest(out, tmp, SIZE_OF_SHA_256_HASH);
+}
+
+int blobmath_x_hash160(uint8_t* out, const uint8_t* in, uint32_t size) {
+    // first hash
+    uint8_t tmp[SIZE_OF_SHA_256_HASH];
+    memset(tmp, 0, sizeof(tmp));
+    calc_sha_256(tmp, in, size);
+
+    // second hash
+    return sha1digest(out, tmp, SIZE_OF_SHA_256_HASH);
+}
+
+// """""random""""" 64 bits
+uint64_t blobmath_x_getNoise(void) {
+    uint8_t noise[8];
+    uint8_t c_time[8];
+    uint8_t tmp[4];
+
+    *(uint32_t*)tmp = blobmath_i_rand32(); // null exec nice
+    uint32_t noise0 = crc32(blobmath_i_rand32(), tmp, 4);
+
+    time((time_t*)c_time);
+
+    uint32_t noise1 = crc32(blobmath_i_rand32(), c_time, 8);
+
+    int rand0 = blobmath_i_rand32(), rand1 = blobmath_i_rand32();
+
+    if (rand0 > rand1) {
+        *(uint32_t*)noise = noise0;
+        *(uint32_t*)(noise + 4) = noise1;
+    } else {
+        *(uint32_t*)noise = noise1;
+        *(uint32_t*)(noise + 4) = noise0;
+    }
+
+    uint64_t noise_out = *(uint64_t*)noise;
+
+    *(uint64_t*)noise = 0xFFFFFFFFFFFFFFFF;
+    *(uint64_t*)c_time = 0xFFFFFFFFFFFFFFFF;
+    *(uint32_t*)tmp = 0xFFFFFFFF;
+
+    return noise_out;
+}
+
+int blobmath_x_initDefault(int version, int hashParam) {
+    // TODO: something else
+    srand(time(NULL));
+    blobmath_i_rand32 = rand;
+
+    // legacy support
+    switch(version) {
+        case MATH_VERSIO_N(1, 0):
+            blobmath_x_encryptEntryDataSize = blobmath_x_encryptEntryDataSize_1v0;
+            break;
+        case MATH_VERSIO_N(1, 3):
+            blobmath_x_encryptEntryDataSize = blobmath_x_encryptEntryDataSize_1v3;
+            break;
+        default:
+            blobmath_x_encryptEntryDataSize = blobmath_x_encryptEntryDataSize_1v3;
+            break;
+    }
+
+    // impacts performance
+    switch (hashParam) {
+        case MATH_HASH_SHA1: // legacy
+            blobmath_i_hash160 = sha1digest;
+            break;
+        case MATH_HASH_SHA1_SHA256:
+            blobmath_i_hash160 = blobmath_x_hash160;
+            break;
+        case MATH_HASH_SHA1_AES_SHA256:
+            blobmath_i_hash160 = blobmath_x_hash160_aes;
+            break;
+        default:
+            blobmath_i_hash160 = blobmath_x_hash160;
+            break;
     }
 
     return 0;

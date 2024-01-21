@@ -16,8 +16,8 @@ unorganized encrypted file container aiming to be indistinguishable from garbage
   - '--replace' : for 'add' mode, if file/entry exists blobpak will remove it first
   - '--view' : for 'get' mode, prints data as ascii
   - '--math1v0' : use blobmath v1.0 - v1.2
-  - '--maxpad <size>' : for 'add' mode, use random padding up to <size> bytes (default 2048)
-  - '--hashparam <param>' : one of SHA1, SHA256_SHA1, SHA256_AES_SHA1 (default SHA256_SHA1)
+  - '--maxpad [size]' : for 'add' mode, use random padding up to [size] bytes (default 2048)
+  - '--hashparam [param]' : one of SHA1, SHA256_SHA1, SHA256_AES_SHA1 (default SHA256_SHA1)
 
 # data layout
 - entries are appended to the main pak consecutively one after another

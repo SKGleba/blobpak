@@ -1,0 +1,42 @@
+#!/bin/bash
+blobpak_ct=$1;
+while true; do
+    printf "\n$1 cmd: ";
+    read -a cmd;
+    if [ ${cmd[0]} == "exit" ]; then break; fi
+    if [ ${cmd[0]} != "remove" ]; then
+        if [ ${cmd[0]} == "grep" ] || [ -z ${cmd[2]} ]; then
+            stty -echo;
+            printf "${cmd[1]} pwd: ";
+            read entry_pwd;
+            stty echo;
+            printf "\n";
+        else entry_pwd=${cmd[2]};
+        fi
+    fi
+    if [ ${cmd[0]} == "view" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --view --enctoc --hashparam SHA256_AES_SHA1;
+    elif [ ${cmd[0]} == "lview" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --stdout --enctoc --hashparam SHA256_AES_SHA1 | less;
+    elif [ ${cmd[0]} == "add" ]; then
+                printf "${cmd[1]} (CTRL-D for EOF):\n";
+                entry_dat=$(</dev/stdin);
+                printf "\n";
+        echo "$entry_dat" | ./bpak $blobpak_ct add ${cmd[1]} $entry_pwd --stdin --enctoc --hashparam SHA256_AES_SHA1 --maxpad 524288;
+    elif [ ${cmd[0]} == "remove" ]; then ./bpak $blobpak_ct del ${cmd[1]} --enctoc --hashparam SHA256_AES_SHA1;
+    elif [ ${cmd[0]} == "setfile" ]; then ./bpak $blobpak_ct add ${cmd[1]} $entry_pwd --replace --enctoc --hashparam SHA256_AES_SHA1 --maxpad 524288;
+    elif [ ${cmd[0]} == "getfile" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --enctoc --hashparam SHA256_AES_SHA1;
+    elif [ ${cmd[0]} == "change" ]; then
+        ./bpak $blobpak_ct del ${cmd[1]} --enctoc --hashparam SHA256_AES_SHA1;
+        printf "${cmd[1]} (CTRL-D for EOF):\n";
+                entry_dat=$(</dev/stdin);
+                printf "\n";
+        echo "$entry_dat" | ./bpak $blobpak_ct add ${cmd[1]} $entry_pwd --stdin --enctoc --hashparam SHA256_AES_SHA1 --maxpad 524288;
+    elif [ ${cmd[0]} == "grep" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --stdout --enctoc --hashparam SHA256_AES_SHA1 | grep -i ${cmd[2]};
+    else echo "ERROR: bad cmd";
+    fi
+    status=$?;
+    if [ $status -ne 0 ]; then echo "BLOBPAK ERROR: $status"; fi
+done
+ 
+unset cmd;
+unset entry_pwd;
+unset entry_dat;

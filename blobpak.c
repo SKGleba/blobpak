@@ -5,34 +5,40 @@
  * of the MIT license.  See the LICENSE file for details.
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdint.h>
-#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "blobpak.h"
 
-//#include "aes.c" // req for body enc/dec
-#include "blobmath.c" // actual blobpak logic/standard
+// #include "aes.c" // req for body enc/dec
+#include "blobmath.c"  // actual blobpak logic/standard
 
 #define ALIGN16(v) ((v + 0xf) & 0xfffffff0)
 
+volatile int enctoc = 0;
 volatile uint32_t rand_blk_max = RANDOM_BLOCK_MAX_SIZE;
 
 // find an entry by its name
-uint32_t findEntryByName(char* name, void* blobpak, uint32_t pak_size) {
+uint32_t findEntryByName(char* name, char* name_salt, void* blobpak, uint32_t pak_size) {
     entry_t temp_entry;
     uint32_t offset = 0;
     while (offset < pak_size) {
         memcpy(&temp_entry, (blobpak + offset), sizeof(entry_t));
-        memset(&temp_entry, 0, ENC_ENTRY_ID_SIZE);
-        blobmath_x_calculateEntryID(&temp_entry, name);
-        if (!memcmp(&temp_entry, blobpak + offset, sizeof(entry_t)))
-            break;
+        if (enctoc) {
+            if (!blobmath_x_cryptEntryTOC((enc_entry_t*)&temp_entry, name, name_salt, 0))
+                break;
+        } else {
+            memset(&temp_entry, 0, ENC_ENTRY_ID_SIZE);
+            blobmath_x_calculateEntryID(&temp_entry, name, name_salt);
+            if (!memcmp(&temp_entry, blobpak + offset, sizeof(entry_t)))
+                break;
+        }
         offset -= -1;
     }
     memset(&temp_entry, 0xFF, sizeof(entry_t));
@@ -51,7 +57,7 @@ uint32_t findEntryDataSize(uint32_t encryptedEntryDataSize, char* entryName, uin
 }
 
 // create an entry
-uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, void* entryStart, void** newEntryStart) {
+uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, char* entryNameSalt, void* entryStart, void** newEntryStart) {
     // ugh
     srand(time(NULL));  // TODO: seed as uarg?
     blobmath_i_rand32 = rand;
@@ -73,13 +79,21 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, vo
     memset(entryHead, 0, sizeof(entry_t));
     entryHead->noise64 = blobmath_x_getNoise();
     entryHead->enc_size = blobmath_x_encryptEntryDataSize(entryDataSize, entryName);
-    blobmath_x_calculateEntryID(entryHead, entryName);
+    if (enctoc) {  // prep IV for cbc
+        *(uint64_t*)entryHead->entryID = blobmath_x_getNoise();
+        *(uint64_t*)(entryHead->entryID + 8) = blobmath_x_getNoise();
+    } else
+        blobmath_x_calculateEntryID(entryHead, entryName, entryNameSalt);
 
     // add the decrypted data and encrypt it there
     uint8_t dataKey[16], dataIV[16];
     void* entryData = entry + randomBlockSize + sizeof(entry_t);
     blobmath_x_calculateDataKey(password, dataKey, dataIV, entryHead);
     aes_cbc(dataKey, dataIV, entryData, ALIGN16(entryDataSize), 1);
+
+    // encrypt the entry header (optional)
+    if (enctoc)
+        blobmath_x_cryptEntryTOC((enc_entry_t*)entryHead, entryName, entryNameSalt, 1);
 
     // cleanup
     memset(randomBlockKey, 0xFF, 16);
@@ -94,16 +108,16 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, vo
 }
 
 // encrypt [name] with [password] and add it to [pak]
-int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
+int addEntry(char* name, char* nameSalt, char* password, char* pak, int iput, int ouput) {
     FILE* fp = NULL;
     uint32_t fileSize = 0;
     void* fileData = NULL;
-    
+
     void* entry = malloc(rand_blk_max + sizeof(entry_t));
     if (!entry)
         return -2;
-    
-    if (iput == IPUT_FILE) { // read the data from a file
+
+    if (iput == IPUT_FILE) {  // read the data from a file
         fp = fopen(name, "rb");
         if (!fp)
             return -1;
@@ -119,7 +133,7 @@ int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
         fseek(fp, 0L, SEEK_SET);
         fread(fileData, fileSize, 1, fp);
         fclose(fp);
-    } else { // read the data from stdin
+    } else {  // read the data from stdin
         void* tmp_p = NULL;
         uint32_t tmp_l = 0;
         entry = realloc(entry, STDIN_BUF_INCR + rand_blk_max + sizeof(entry_t));
@@ -146,8 +160,8 @@ int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
     }
 
     // create the entry
-    void* entryBlock = entry; // lord forgive me
-    uint32_t entrySize = createEntry(fileSize, password, name, entry, &entry);
+    void* entryBlock = entry;  // lord forgive me
+    uint32_t entrySize = createEntry(fileSize, password, name, nameSalt, entry, &entry);
     if (entrySize == 0xFFFFFFFF) {
         memset(fileData, 0xFF, fileSize);
         free(entryBlock);
@@ -155,7 +169,7 @@ int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
     }
 
     // output the entry
-    if (ouput == OUPUT_FILE) { // append entry to file
+    if (ouput == OUPUT_FILE) {  // append entry to file
         fp = fopen(pak, "ab");
         if (!fp) {
             memset(entry, 0xFF, entrySize);
@@ -164,9 +178,8 @@ int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
         }
         fwrite(entry, entrySize, 1, fp);
         fclose(fp);
-    } else // write the entry to stdout
+    } else  // write the entry to stdout
         write(fileno(stdout), entry, entrySize);
-        
 
     // cleanup
     fp = fopen(pak, "rb");
@@ -181,11 +194,11 @@ int addEntry(char* name, char* password, char* pak, int iput, int ouput) {
 }
 
 // extract [name] from [pak] and decrypt it using [password]
-int getEntry(char* name, char* password, char* pak, int iput, int ouput) {
+int getEntry(char* name, char* nameSalt, char* password, char* pak, int iput, int ouput) {
     FILE* fp = NULL;
     uint32_t pakSize = 0;
     void* pakData = NULL;
-    if (iput == IPUT_FILE) { // read the pak from a file
+    if (iput == IPUT_FILE) {  // read the pak from a file
         fp = fopen(pak, "rb");
         if (!fp)
             return -1;
@@ -200,7 +213,7 @@ int getEntry(char* name, char* password, char* pak, int iput, int ouput) {
         fseek(fp, 0L, SEEK_SET);
         fread(pakData, pakSize, 1, fp);
         fclose(fp);
-    } else { // read the pak from stdin
+    } else {  // read the pak from stdin
         void* tmp_p = NULL;
         uint32_t tmp_l = 0;
         pakData = malloc(STDIN_BUF_INCR);
@@ -225,12 +238,14 @@ int getEntry(char* name, char* password, char* pak, int iput, int ouput) {
     }
 
     // find the entry offset
-    uint32_t entryOffset = findEntryByName(name, pakData, pakSize);
+    uint32_t entryOffset = findEntryByName(name, nameSalt, pakData, pakSize);
     if (entryOffset >= pakSize) {
         free(pakData);
         return -3;
     }
     entry_t* entry = pakData + entryOffset;
+    if (enctoc)  // decrypt the entry header
+        blobmath_x_cryptEntryTOC((enc_entry_t*)entry, name, nameSalt, 0);
 
     // data to decrypt
     void* entryData = (void*)entry + sizeof(entry_t);
@@ -256,15 +271,15 @@ int getEntry(char* name, char* password, char* pak, int iput, int ouput) {
     blobmath_x_calculateDataKey(password, dataKey, dataIV, entry);
     aes_cbc(dataKey, dataIV, entryData, ALIGN16(entryDataSize), 0);
 
-    if (ouput == OUPUT_FILE) { // write le data to file
+    if (ouput == OUPUT_FILE) {  // write le data to file
         fwrite(entryData, entryDataSize, 1, fp);
         fclose(fp);
-    } else if (ouput == OUPUT_NICE) { // print the data as ascii
+    } else if (ouput == OUPUT_NICE) {  // print the data as ascii
         printf("[BLOBPAK] ENTRY_START\n\n");
-        for (uint32_t off = 0; off < entryDataSize; off += 4095) // can wraparound, but 4gib text? lul
+        for (uint32_t off = 0; off < entryDataSize; off += 4095)  // can wraparound, but 4gib text? lul
             printf("%.*s", entryDataSize - off, (char*)(entryData + off));
         printf("\n[BLOBPAK] ENTRY_END\n");
-    } else // write the data to stdout
+    } else  // write the data to stdout
         write(fileno(stdout), entryData, entryDataSize);
 
     // cleanup
@@ -275,7 +290,8 @@ int getEntry(char* name, char* password, char* pak, int iput, int ouput) {
             fclose(fp);
         }
     }
-    
+
+    memset(entry, 0xFF, sizeof(entry_t));
     memset(entryData, 0xFF, ALIGN16(entryDataSize));
     free(pakData);
     memset(dataKey, 0xFF, 16);
@@ -285,11 +301,11 @@ int getEntry(char* name, char* password, char* pak, int iput, int ouput) {
 }
 
 // delete entry with [name] from the [pak] file
-int delEntry(char* name, char* pak, int iput, int ouput) {
+int delEntry(char* name, char* nameSalt, char* pak, int iput, int ouput) {
     FILE* fp = NULL;
     uint32_t pakSize = 0;
     void* pakData = NULL;
-    if (iput == IPUT_FILE) { // read the pak from a file
+    if (iput == IPUT_FILE) {  // read the pak from a file
         fp = fopen(pak, "rb");
         if (!fp)
             return -1;
@@ -304,7 +320,7 @@ int delEntry(char* name, char* pak, int iput, int ouput) {
         fseek(fp, 0L, SEEK_SET);
         fread(pakData, pakSize, 1, fp);
         fclose(fp);
-    } else { // read the pak from stdin
+    } else {  // read the pak from stdin
         void* tmp_p = NULL;
         uint32_t tmp_l = 0;
         pakData = malloc(STDIN_BUF_INCR);
@@ -329,43 +345,48 @@ int delEntry(char* name, char* pak, int iput, int ouput) {
     }
 
     // find the entry offset
-    uint32_t entryOffset = findEntryByName(name, pakData, pakSize);
+    uint32_t entryOffset = findEntryByName(name, nameSalt, pakData, pakSize);
     if (entryOffset >= pakSize) {
+        memset(pakData, 0xFF, pakSize);
         free(pakData);
         return -3;
     }
     entry_t* entry = pakData + entryOffset;
+    if (enctoc)  // decrypt the entry header
+        blobmath_x_cryptEntryTOC((enc_entry_t*)entry, name, nameSalt, 0);
 
     // find the entry size
     uint32_t entryDataSize = findEntryDataSize(entry->enc_size, name, pakSize - entryOffset);
     if (entryDataSize >= (pakSize - entryOffset)) {
+        memset(pakData, 0xFF, pakSize);
         free(pakData);
         return -4;
     }
 
     // write back without the entry
     uint32_t postEntry = entryOffset + sizeof(entry_t) + entryDataSize;
-    if (ouput == OUPUT_FILE) { // write pak to file
+    if (ouput == OUPUT_FILE) {  // write pak to file
         fp = fopen(pak, "wb");
         if (!fp) {
+            memset(pakData, 0xFF, pakSize);
             free(pakData);
             return -5;
         }
         fwrite(pakData, entryOffset, 1, fp);
         fwrite(pakData + postEntry, pakSize - postEntry, 1, fp);
         fclose(fp);
-    } else { // write pak to stdout
+    } else {  // write pak to stdout
         write(fileno(stdout), pakData, entryOffset);
         write(fileno(stdout), pakData + postEntry, pakSize - postEntry);
     }
 
+    memset(pakData, 0xFF, pakSize);
     free(pakData);
 
     return 0;
 }
 
-__attribute__((optimize(0)))
-volatile int cleanup(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j, int k, int l) {
+__attribute__((optimize(0))) volatile int cleanup(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j, int k, int l) {
     a = b = c = d = e = f = g = h = i = j = k = l = -1;
     volatile uint8_t cleaned[0x200];
     for (int i = 0; i < 0x200; i++)
@@ -389,9 +410,13 @@ int main(int argc, char* argv[]) {
         printf(" - '--math1v0' : use blobmath v1.0 - v1.2\n");
         printf(" - '--maxpad <size>' : for 'add' mode, use random padding up to <size> bytes (default 2048)\n");
         printf(" - '--hashparam <param>' : one of SHA1, SHA256_SHA1, SHA256_AES_SHA1 (default SHA256_SHA1)\n");
+        printf(" - '--enctoc' : encrypt the entry ToC\n");
+        printf(" - '--namesalt <salt>' : use <salt> as the entry name salt\n");
+        printf(" - '--pwdsalt <salt>' : use <salt> as the password salt\n");
         return -1;
     }
 
+    char *name_salt = NULL, *password_salt = NULL;
     int ouput = OUPUT_FILE, iput = IPUT_FILE, replace = 0, version = 0, hash_param = MATH_HASH_SHA1_SHA256;
 
     for (int i = 4; i < argc; i++) {
@@ -421,6 +446,18 @@ int main(int argc, char* argv[]) {
                 return -1;
             }
             i -= -1;
+        } else if (!strcmp("--enctoc", argv[i]))
+            enctoc = 1;
+        else if (!strcmp("--namesalt", argv[i])) {
+            name_salt = argv[i + 1];
+            i -= -1;
+        } else if (!strcmp("--pwdsalt", argv[i])) {
+            // xor salt with the password
+            password_salt = argv[i + 1];
+            int xor_len = strnlen(password_salt, strlen(argv[4]));
+            for (int y = 0; y < xor_len; y -= -1)
+                argv[4][y] ^= password_salt[y];
+            i -= -1;
         }
     }
 
@@ -434,26 +471,30 @@ int main(int argc, char* argv[]) {
 
     int ret = -8;
     if (!strcmp("del", argv[2]))
-        ret = delEntry(argv[3], argv[1], iput, ouput);
+        ret = delEntry(argv[3], name_salt, argv[1], iput, ouput);
     else if (!strcmp("add", argv[2])) {
         if (replace) {
-            ret = delEntry(argv[3], argv[1], iput, OUPUT_FILE); // ignore ret
+            ret = delEntry(argv[3], name_salt, argv[1], iput, OUPUT_FILE);  // ignore ret
             printf("[BLOBPAK] del %s 0x%X\n", (ret < 0) ? "failed" : "ok", ret);
-            ret = addEntry(argv[3], argv[4], argv[1], IPUT_FILE, OUPUT_FILE);
+            ret = addEntry(argv[3], name_salt, argv[4], argv[1], IPUT_FILE, OUPUT_FILE);
         } else
-            ret = addEntry(argv[3], argv[4], argv[1], iput, ouput);
+            ret = addEntry(argv[3], name_salt, argv[4], argv[1], iput, ouput);
     } else if (!strcmp("get", argv[2]))
-        ret = getEntry(argv[3], argv[4], argv[1], iput, ouput);
+        ret = getEntry(argv[3], name_salt, argv[4], argv[1], iput, ouput);
 
     if (ouput != OUPUT_STDOUT)
         printf("[BLOBPAK] %s %s 0x%X\n", argv[2], (ret < 0) ? "failed" : "ok", ret);
 
     rand_blk_max = RANDOM_BLOCK_MAX_SIZE;
-    cleanup(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1); // lemme have some fun
+    enctoc = 0;
+    cleanup(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);  // lemme have some fun
     if (argc >= 5)
         memset((void*)argv[4], 0xFF, strlen(argv[4]));
     memset((void*)argv[3], 0xFF, strlen(argv[3]));
+    if (name_salt)
+        memset((void*)name_salt, 0xFF, strlen(name_salt));
+    if (password_salt)
+        memset((void*)password_salt, 0xFF, strlen(password_salt));
 
     return ret;
 }
-

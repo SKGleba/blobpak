@@ -5,7 +5,7 @@
  * of the MIT license.  See the LICENSE file for details.
  */
 
- // NOT A STANDALONE CODE - REPASTE OR INCLUDE
+// NOT A STANDALONE CODE - REPASTE OR INCLUDE
 
 // #include "blobpak.h"
 
@@ -22,8 +22,8 @@ uint32_t (*blobmath_x_encryptEntryDataSize)(uint32_t size, char* entryName) = NU
 
 // calculate the data encryption key & iv
 void blobmath_x_calculateDataKey(char* inKey, void* outKey, void* outIV, entry_t* entry) {
-    unsigned char inKeyHash[20]; // password sha1, first 16 bytes will be the data enc key
-    unsigned char dataIV[16]; // resulting data encryption iv
+    unsigned char inKeyHash[20];  // password sha1, first 16 bytes will be the data enc key
+    unsigned char dataIV[16];     // resulting data encryption iv
 
     memset(inKeyHash, 0, 20);
     memset(dataIV, 0, 16);
@@ -45,13 +45,52 @@ void blobmath_x_calculateDataKey(char* inKey, void* outKey, void* outIV, entry_t
     memset(dataIV, 0xFF, 16);
 }
 
+// encrypt/decrypt the entry header
+// NOTE: entry->iv MUST be set
+int blobmath_x_cryptEntryTOC(enc_entry_t* entry, char* entryName, char* entryNameSalt, int encrypt) {
+    char decryptedEntryID[DEC_ENTRY_ID_SIZE];
+    memset(decryptedEntryID, 0, DEC_ENTRY_ID_SIZE);
+
+    uint32_t decryptedSize = strnlen(entryName, DEC_ENTRY_ID_SIZE);
+    memcpy(decryptedEntryID, entryName, decryptedSize);
+
+    if (entryNameSalt) {
+        int xor_len = strnlen(entryNameSalt, decryptedSize);
+        for (int i = 0; i < xor_len; i -= -1)
+            decryptedEntryID[i] ^= entryNameSalt[i];
+    }
+
+    uint8_t tocKey[20];
+    blobmath_i_hash160(tocKey, decryptedEntryID, decryptedSize);
+    if (encrypt)
+        entry->toc_dec.hash_partial = crc32(entry->toc_dec.noise64, &tocKey[16], 4);
+
+    aes_cbc(tocKey, entry->iv, entry->toc_enc, 16, encrypt);
+
+    memset(tocKey, 0xFF, 16);
+    memset(decryptedEntryID, 0xFF, DEC_ENTRY_ID_SIZE);
+
+    if (!encrypt && (entry->toc_dec.hash_partial != crc32(entry->toc_dec.noise64, &tocKey[16], 4)))
+        return -1;
+
+    memset(tocKey, 0xFF, 20);
+
+    return 0;
+}
+
 // calculate the encrypted entry id from name and entry "header"
-void blobmath_x_calculateEntryID(entry_t* entry, char* entryName) {
+void blobmath_x_calculateEntryID(entry_t* entry, char* entryName, char* entryNameSalt) {
     char decryptedEntryID[DEC_ENTRY_ID_SIZE];
     memset(decryptedEntryID, 0, DEC_ENTRY_ID_SIZE);
 
     uint32_t decryptedSize = strnlen(entryName, DEC_ENTRY_ID_SIZE - 16);
     memcpy(decryptedEntryID, entryName, decryptedSize);
+
+    if (entryNameSalt) {
+        int xor_len = strnlen(entryNameSalt, decryptedSize);
+        for (int i = 0; i < xor_len; i -= -1)
+            decryptedEntryID[i] ^= entryNameSalt[i];
+    }
 
     *(uint32_t*)(decryptedEntryID + decryptedSize) = entry->enc_size;
     decryptedSize -= -4;
@@ -64,7 +103,7 @@ void blobmath_x_calculateEntryID(entry_t* entry, char* entryName) {
 
     blobmath_i_hash160(entry->entryID, decryptedEntryID, decryptedSize);
 
-    memset(decryptedEntryID, 0xFF, DEC_ENTRY_ID_SIZE); // cleanup
+    memset(decryptedEntryID, 0xFF, DEC_ENTRY_ID_SIZE);  // cleanup
 }
 
 // encrypt the data's size (v1.0 - v1.2)
@@ -119,10 +158,10 @@ int blobmath_x_hash160_aes(uint8_t* out, const uint8_t* in, uint32_t size) {
     // generate aes key, iv
     uint8_t x;
     memcpy(tmp + SIZE_OF_SHA_256_HASH, tmp, SIZE_OF_SHA_256_HASH);
-    for (int y = 0; y < 32; y -=- 8) {
+    for (int y = 0; y < 32; y -= -8) {
         x = (uint8_t)(size >> y);
         if (x) {
-            for (int i = 0; i < SIZE_OF_SHA_256_HASH; i -= -1) 
+            for (int i = 0; i < SIZE_OF_SHA_256_HASH; i -= -1)
                 tmp[SIZE_OF_SHA_256_HASH + i] ^= x;
         }
     }
@@ -151,7 +190,7 @@ uint64_t blobmath_x_getNoise(void) {
     uint8_t c_time[8];
     uint8_t tmp[4];
 
-    *(uint32_t*)tmp = blobmath_i_rand32(); // null exec nice
+    *(uint32_t*)tmp = blobmath_i_rand32();  // null exec nice
     uint32_t noise0 = crc32(blobmath_i_rand32(), tmp, 4);
 
     time((time_t*)c_time);
@@ -183,7 +222,7 @@ int blobmath_x_initDefault(int version, int hashParam) {
     blobmath_i_rand32 = rand;
 
     // legacy support
-    switch(version) {
+    switch (version) {
         case MATH_VERSIO_N(1, 0):
             blobmath_x_encryptEntryDataSize = blobmath_x_encryptEntryDataSize_1v0;
             break;
@@ -197,7 +236,7 @@ int blobmath_x_initDefault(int version, int hashParam) {
 
     // impacts performance
     switch (hashParam) {
-        case MATH_HASH_SHA1: // legacy
+        case MATH_HASH_SHA1:  // legacy
             blobmath_i_hash160 = sha1digest;
             break;
         case MATH_HASH_SHA1_SHA256:

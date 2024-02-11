@@ -18,6 +18,9 @@ unorganized encrypted file container aiming to be indistinguishable from garbage
   - '--math1v0' : use blobmath v1.0 - v1.2
   - '--maxpad [size]' : for 'add' mode, use random padding up to [size] bytes (default 2048)
   - '--hashparam [param]' : one of SHA1, SHA256_SHA1, SHA256_AES_SHA1 (default SHA256_SHA1)
+  - '--enctoc' : encrypt the entry ToC
+  - '--namesalt [salt]' : use [salt] as the entry name xor salt
+  - '--pwdsalt [salt]' : use [salt] as the password xor salt
 
 # data layout
 - entries are appended to the main pak consecutively one after another

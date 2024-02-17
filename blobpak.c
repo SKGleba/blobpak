@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2023 skgleba
+ * Copyright (C) 2022-2024 skgleba
  *
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
@@ -21,16 +21,26 @@
 
 #define ALIGN16(v) ((v + 0xf) & 0xfffffff0)
 
-volatile int enctoc = 0;
+volatile int enchdr = 0;
 volatile uint32_t rand_blk_max = RANDOM_BLOCK_MAX_SIZE;
 
-// find an entry by its name
+/**
+ * @brief Finds an entry in the blobpak by its name.
+ * This function searches for an entry with the specified name in the blobpak.
+ * It uses a brute force approach to find the entry by iterating through the blobpak byte by byte.
+ *
+ * @param name The name of the entry to find.
+ * @param name_salt Optional salt that is XORed with the entry name before hashing.
+ * @param blobpak Pointer to the blobpak data.
+ * @param pak_size The size of the blobpak in bytes.
+ * @return The offset of the found entry in the blobpak, or pak_size if not found.
+ */
 uint32_t findEntryByName(char* name, char* name_salt, void* blobpak, uint32_t pak_size) {
     entry_t temp_entry;
     uint32_t offset = 0;
     while (offset < pak_size) {
         memcpy(&temp_entry, (blobpak + offset), sizeof(entry_t));
-        if (enctoc) {
+        if (enchdr) {
             if (!blobmath_x_cryptEntryTOC((enc_entry_t*)&temp_entry, name, name_salt, 0))
                 break;
         } else {
@@ -45,7 +55,18 @@ uint32_t findEntryByName(char* name, char* name_salt, void* blobpak, uint32_t pa
     return offset;
 }
 
-// bruteforce the entry size
+/**
+ * @brief Finds the decrypted size of an entry in a blobpak.
+ * This function uses a brute force approach to find the decrypted size of an entry in a blobpak.
+ * It iterates through possible sizes starting from 1 and checks if the encrypted size
+ * matches the given encrypted entry data size. Once a match is found, the function returns the
+ * decrypted size.
+ *
+ * @param encryptedEntryDataSize The encrypted size of the entry data.
+ * @param entryName The name of the entry.
+ * @param maxSize The maximum size to consider during the search.
+ * @return The decrypted size of the entry, or maxSize if no match is found.
+ */
 uint32_t findEntryDataSize(uint32_t encryptedEntryDataSize, char* entryName, uint32_t maxSize) {
     uint32_t currentDecryptedSize = 1;
     while (currentDecryptedSize < maxSize) {
@@ -56,12 +77,22 @@ uint32_t findEntryDataSize(uint32_t encryptedEntryDataSize, char* entryName, uin
     return currentDecryptedSize;
 }
 
+/**
+ * @brief Creates an entry at the given address.
+ * First, a random-sized block of random data is generated.
+ * Then, the entry header is created and, optionally, encrypted.
+ * Finally, the entry data is encrypted in place using a key & iv derived from the password.
+ *
+ * @param entryDataSize The size of the entry data.
+ * @param password The password used for data encryption.
+ * @param entryName The name of the entry.
+ * @param entryNameSalt Optional salt for the entry name.
+ * @param entryStart Entry buffer containing the entry data at (rand_blk_max + sizeof(entry_t)).
+ * @param newEntryStart The start address of the entry inside the entry buffer.
+ * @return The size of the created entry.
+ */
 // create an entry
 uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, char* entryNameSalt, void* entryStart, void** newEntryStart) {
-    // ugh
-    srand(time(NULL));  // TODO: seed as uarg?
-    blobmath_i_rand32 = rand;
-
     int randomBlockSize = (blobmath_i_rand32() % rand_blk_max) + 1;
     uint32_t entrySize = ALIGN16(entryDataSize) + sizeof(entry_t) + randomBlockSize;
     void* entry = entryStart + (rand_blk_max - randomBlockSize);
@@ -79,7 +110,7 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, ch
     memset(entryHead, 0, sizeof(entry_t));
     entryHead->noise64 = blobmath_x_getNoise();
     entryHead->enc_size = blobmath_x_encryptEntryDataSize(entryDataSize, entryName);
-    if (enctoc) {  // prep IV for cbc
+    if (enchdr) {  // prep IV for cbc
         *(uint64_t*)entryHead->entryID = blobmath_x_getNoise();
         *(uint64_t*)(entryHead->entryID + 8) = blobmath_x_getNoise();
     } else
@@ -92,7 +123,7 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, ch
     aes_cbc(dataKey, dataIV, entryData, ALIGN16(entryDataSize), 1);
 
     // encrypt the entry header (optional)
-    if (enctoc)
+    if (enchdr)
         blobmath_x_cryptEntryTOC((enc_entry_t*)entryHead, entryName, entryNameSalt, 1);
 
     // cleanup
@@ -107,6 +138,17 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, ch
     return entrySize;
 }
 
+/**
+ * @brief Creates an entry and appends it to the blobpak.
+ *
+ * @param name The name/path of the file to be encrypted and added to the package.
+ * @param nameSalt The salt value used for obfuscating the file name.
+ * @param password The password used for encrypting the file data.
+ * @param pak The blobpak to which the encrypted entry will be appended.
+ * @param iput The input source of the file data (IPUT_FILE or IPUT_STDIN).
+ * @param ouput The output destination for the encrypted entry (OUPUT_FILE or OUPUT_STDOUT).
+ * @return 0 if the entry was successfully added, a negative value indicating an error otherwise.
+ */
 // encrypt [name] with [password] and add it to [pak]
 int addEntry(char* name, char* nameSalt, char* password, char* pak, int iput, int ouput) {
     FILE* fp = NULL;
@@ -193,7 +235,18 @@ int addEntry(char* name, char* nameSalt, char* password, char* pak, int iput, in
     return 0;
 }
 
-// extract [name] from [pak] and decrypt it using [password]
+/**
+ * @brief Finds, extracts, decrypts, and outputs an entry from a blobpak.
+ *
+ * @param name The name of the entry to extract.
+ * @param nameSalt The salt used for obfuscating the entry name.
+ * @param password The password used for decrypting the entry data.
+ * @param pak The path to the blobpak containing the entry.
+ * @param iput The input source, either IPUT_FILE or IPUT_STDIN.
+ * @param ouput The output destination, either OUPUT_FILE, OUPUT_NICE, or OUPUT_STDOUT.
+ *   @note The output file will be overwritten if it already exists.
+ * @return 0 if successful, or a negative value indicating an error.
+ */
 int getEntry(char* name, char* nameSalt, char* password, char* pak, int iput, int ouput) {
     FILE* fp = NULL;
     uint32_t pakSize = 0;
@@ -244,7 +297,7 @@ int getEntry(char* name, char* nameSalt, char* password, char* pak, int iput, in
         return -3;
     }
     entry_t* entry = pakData + entryOffset;
-    if (enctoc)  // decrypt the entry header
+    if (enchdr)  // decrypt the entry header
         blobmath_x_cryptEntryTOC((enc_entry_t*)entry, name, nameSalt, 0);
 
     // data to decrypt
@@ -300,7 +353,16 @@ int getEntry(char* name, char* nameSalt, char* password, char* pak, int iput, in
     return 0;
 }
 
-// delete entry with [name] from the [pak] file
+/**
+ * @brief Deletes an entry with the specified name from the blobpak container.
+ *
+ * @param name The name of the entry to be deleted.
+ * @param nameSalt The salt used for obfuscation of the entry name.
+ * @param pak The path to the blobpak containing the entry.
+ * @param iput The input source (IPUT_FILE or IPUT_STDIN).
+ * @param ouput The output destination for the resulting blobpak (OUPUT_FILE or OUPUT_STDOUT).
+ * @return 0 if the entry is successfully deleted, a negative value indicating an error otherwise.
+ */
 int delEntry(char* name, char* nameSalt, char* pak, int iput, int ouput) {
     FILE* fp = NULL;
     uint32_t pakSize = 0;
@@ -352,7 +414,7 @@ int delEntry(char* name, char* nameSalt, char* pak, int iput, int ouput) {
         return -3;
     }
     entry_t* entry = pakData + entryOffset;
-    if (enctoc)  // decrypt the entry header
+    if (enchdr)  // decrypt the entry header
         blobmath_x_cryptEntryTOC((enc_entry_t*)entry, name, nameSalt, 0);
 
     // find the entry size
@@ -386,6 +448,12 @@ int delEntry(char* name, char* nameSalt, char* pak, int iput, int ouput) {
     return 0;
 }
 
+/**
+ * @brief Performs cleanup operations.
+ * Clean the stack and heap by overwriting the input arguments and some local variables with 0xFF.
+ *
+ * @return -1 indicating the cleanup operation is complete.
+ */
 __attribute__((optimize(0))) volatile int cleanup(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j, int k, int l) {
     a = b = c = d = e = f = g = h = i = j = k = l = -1;
     volatile uint8_t cleaned[0x200];
@@ -394,6 +462,16 @@ __attribute__((optimize(0))) volatile int cleanup(int a, int b, int c, int d, in
     return -1;
 }
 
+/**
+ * @brief Main function for the blobpak manager.
+ * Parse the arguments, initialize the blobmath library, and call the appropriate function based on the mode.
+ * At the end, clean up the input arguments and some local variables.
+ *
+ * @param argc The number of command-line arguments.
+ * @param argv An array of strings representing the container location, mode, entry path, password, and optional overrides.
+ *   @warning This function expects the argv array of strings to be writable.
+ * @return The exit status of the operation.
+ */
 int main(int argc, char* argv[]) {
     if (argc < 4 || (argc < 5 && strcmp("del", argv[2]))) {
         printf(VER_STRING "\n");
@@ -410,7 +488,7 @@ int main(int argc, char* argv[]) {
         printf(" - '--math1v0' : use blobmath v1.0 - v1.2\n");
         printf(" - '--maxpad <size>' : for 'add' mode, use random padding up to <size> bytes (default 2048)\n");
         printf(" - '--hashparam <param>' : one of SHA1, SHA256_SHA1, SHA256_AES_SHA1 (default SHA256_SHA1)\n");
-        printf(" - '--enctoc' : encrypt the entry ToC\n");
+        printf(" - '--enchdr' : encrypt the entry header\n");
         printf(" - '--namesalt <salt>' : use <salt> as the entry name salt\n");
         printf(" - '--pwdsalt <salt>' : use <salt> as the password salt\n");
         return -1;
@@ -446,8 +524,8 @@ int main(int argc, char* argv[]) {
                 return -1;
             }
             i -= -1;
-        } else if (!strcmp("--enctoc", argv[i]))
-            enctoc = 1;
+        } else if (!strcmp("--enchdr", argv[i]))
+            enchdr = 1;
         else if (!strcmp("--namesalt", argv[i])) {
             name_salt = argv[i + 1];
             i -= -1;
@@ -486,7 +564,7 @@ int main(int argc, char* argv[]) {
         printf("[BLOBPAK] %s %s 0x%X\n", argv[2], (ret < 0) ? "failed" : "ok", ret);
 
     rand_blk_max = RANDOM_BLOCK_MAX_SIZE;
-    enctoc = 0;
+    enchdr = 0;
     cleanup(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);  // lemme have some fun
     if (argc >= 5)
         memset((void*)argv[4], 0xFF, strlen(argv[4]));

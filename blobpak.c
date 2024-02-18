@@ -85,6 +85,7 @@ uint32_t findEntryDataSize(uint32_t encryptedEntryDataSize, char* entryName, uin
  *
  * @param entryDataSize The size of the entry data.
  * @param password The password used for data encryption.
+ * @param passwordLen The length of the password.
  * @param entryName The name of the entry.
  * @param entryNameSalt Optional salt for the entry name.
  * @param entryStart Entry buffer containing the entry data at (rand_blk_max + sizeof(entry_t)).
@@ -92,7 +93,7 @@ uint32_t findEntryDataSize(uint32_t encryptedEntryDataSize, char* entryName, uin
  * @return The size of the created entry.
  */
 // create an entry
-uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, char* entryNameSalt, void* entryStart, void** newEntryStart) {
+uint32_t createEntry(uint32_t entryDataSize, char* password, int passwordLen, char* entryName, char* entryNameSalt, void* entryStart, void** newEntryStart) {
     int randomBlockSize = (blobmath_i_rand32() % rand_blk_max) + 1;
     uint32_t entrySize = ALIGN16(entryDataSize) + sizeof(entry_t) + randomBlockSize;
     void* entry = entryStart + (rand_blk_max - randomBlockSize);
@@ -103,7 +104,7 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, ch
     *(uint64_t*)(randomBlockKey + 8) = blobmath_x_getNoise();
     *(uint64_t*)randomBlockIV = blobmath_x_getNoise();
     *(uint64_t*)(randomBlockIV + 8) = blobmath_x_getNoise();
-    aes_cbc(randomBlockKey, randomBlockIV, entry, ALIGN16(randomBlockSize), 1);
+    blobmath_x_cryptData128(randomBlockKey, randomBlockIV, entry, ALIGN16(randomBlockSize), 1);
 
     // create the encrypted "header"
     entry_t* entryHead = entry + randomBlockSize;
@@ -119,8 +120,8 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, ch
     // add the decrypted data and encrypt it there
     uint8_t dataKey[16], dataIV[16];
     void* entryData = entry + randomBlockSize + sizeof(entry_t);
-    blobmath_x_calculateDataKey(password, dataKey, dataIV, entryHead);
-    aes_cbc(dataKey, dataIV, entryData, ALIGN16(entryDataSize), 1);
+    blobmath_x_calculateDataKey(password, passwordLen, dataKey, dataIV, entryHead);
+    blobmath_x_cryptData128(dataKey, dataIV, entryData, ALIGN16(entryDataSize), 1);
 
     // encrypt the entry header (optional)
     if (enchdr)
@@ -144,13 +145,14 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, char* entryName, ch
  * @param name The name/path of the file to be encrypted and added to the package.
  * @param nameSalt The salt value used for obfuscating the file name.
  * @param password The password used for encrypting the file data.
+ * @param passwordLen The length of the password.
  * @param pak The blobpak to which the encrypted entry will be appended.
  * @param iput The input source of the file data (IPUT_FILE or IPUT_STDIN).
  * @param ouput The output destination for the encrypted entry (OUPUT_FILE or OUPUT_STDOUT).
  * @return 0 if the entry was successfully added, a negative value indicating an error otherwise.
  */
 // encrypt [name] with [password] and add it to [pak]
-int addEntry(char* name, char* nameSalt, char* password, char* pak, int iput, int ouput) {
+int addEntry(char* name, char* nameSalt, char* password, int passwordLen, char* pak, int iput, int ouput) {
     FILE* fp = NULL;
     uint32_t fileSize = 0;
     void* fileData = NULL;
@@ -203,7 +205,7 @@ int addEntry(char* name, char* nameSalt, char* password, char* pak, int iput, in
 
     // create the entry
     void* entryBlock = entry;  // lord forgive me
-    uint32_t entrySize = createEntry(fileSize, password, name, nameSalt, entry, &entry);
+    uint32_t entrySize = createEntry(fileSize, password, passwordLen, name, nameSalt, entry, &entry);
     if (entrySize == 0xFFFFFFFF) {
         memset(fileData, 0xFF, fileSize);
         free(entryBlock);
@@ -241,13 +243,14 @@ int addEntry(char* name, char* nameSalt, char* password, char* pak, int iput, in
  * @param name The name of the entry to extract.
  * @param nameSalt The salt used for obfuscating the entry name.
  * @param password The password used for decrypting the entry data.
+ * @param passwordLen The length of the password.
  * @param pak The path to the blobpak containing the entry.
  * @param iput The input source, either IPUT_FILE or IPUT_STDIN.
  * @param ouput The output destination, either OUPUT_FILE, OUPUT_NICE, or OUPUT_STDOUT.
  *   @note The output file will be overwritten if it already exists.
  * @return 0 if successful, or a negative value indicating an error.
  */
-int getEntry(char* name, char* nameSalt, char* password, char* pak, int iput, int ouput) {
+int getEntry(char* name, char* nameSalt, char* password, int passwordLen, char* pak, int iput, int ouput) {
     FILE* fp = NULL;
     uint32_t pakSize = 0;
     void* pakData = NULL;
@@ -321,8 +324,8 @@ int getEntry(char* name, char* nameSalt, char* password, char* pak, int iput, in
 
     // calculate keys & decrypt the data
     uint8_t dataKey[16], dataIV[16];
-    blobmath_x_calculateDataKey(password, dataKey, dataIV, entry);
-    aes_cbc(dataKey, dataIV, entryData, ALIGN16(entryDataSize), 0);
+    blobmath_x_calculateDataKey(password, passwordLen, dataKey, dataIV, entry);
+    blobmath_x_cryptData128(dataKey, dataIV, entryData, ALIGN16(entryDataSize), 0);
 
     if (ouput == OUPUT_FILE) {  // write le data to file
         fwrite(entryData, entryDataSize, 1, fp);
@@ -491,11 +494,21 @@ int main(int argc, char* argv[]) {
         printf(" - '--enchdr' : encrypt the entry header\n");
         printf(" - '--namesalt <salt>' : use <salt> as the entry name salt\n");
         printf(" - '--pwdsalt <salt>' : use <salt> as the password salt\n");
+        printf(" - '--aes128param <param>' : one of AES_128_CBC, AES_128_CCBC (default AES_128_CBC)\n");
         return -1;
     }
 
-    char *name_salt = NULL, *password_salt = NULL;
-    int ouput = OUPUT_FILE, iput = IPUT_FILE, replace = 0, version = 0, hash_param = MATH_HASH_SHA1_SHA256;
+    char *blob = NULL, *op = NULL, *name = NULL, *password = NULL, *name_salt = NULL, *password_salt = NULL;
+    int ouput = OUPUT_FILE, iput = IPUT_FILE, replace = 0, version = 0, hash_param = 0, password_len = 0, aes128param = 0;
+
+    blob = argv[1];
+    op = argv[2];
+    name = argv[3];
+
+    if (!strcmp("add", argv[2]) || !strcmp("get", argv[2])) {
+        password = argv[4];
+        password_len = strlen(password);
+    }
 
     for (int i = 4; i < argc; i++) {
         if (!strcmp("--stdin", argv[i]))
@@ -504,12 +517,11 @@ int main(int argc, char* argv[]) {
             ouput = OUPUT_STDOUT;
         else if (!strcmp("--replace", argv[i]))
             replace = 1;
-        else if (!strcmp("--view", argv[i]) && !strcmp("get", argv[2]))
+        else if (!strcmp("--view", argv[i]) && !strcmp("get", op))
             ouput = OUPUT_NICE;
-        else if (!strcmp("--math1v0", argv[i])) {
+        else if (!strcmp("--math1v0", argv[i]))
             version = MATH_VERSIO_N(1, 0);
-            hash_param = MATH_HASH_SHA1;
-        } else if (!strcmp("--maxpad", argv[i])) {
+        else if (!strcmp("--maxpad", argv[i])) {
             rand_blk_max = strtoul(argv[i + 1], NULL, 10);
             i -= -1;
         } else if (!strcmp("--hashparam", argv[i])) {
@@ -532,9 +544,19 @@ int main(int argc, char* argv[]) {
         } else if (!strcmp("--pwdsalt", argv[i])) {
             // xor salt with the password
             password_salt = argv[i + 1];
-            int xor_len = strnlen(password_salt, strlen(argv[4]));
+            int xor_len = strnlen(password_salt, password_len);
             for (int y = 0; y < xor_len; y -= -1)
-                argv[4][y] ^= password_salt[y];
+                password[y] ^= password_salt[y];
+            i -= -1;
+        } else if (!strcmp("--aes128param", argv[i])) {
+            if (!strcmp("AES_128_CBC", argv[i + 1]))
+                aes128param = MATH_AES128_CBC;
+            else if (!strcmp("AES_128_CCBC", argv[i + 1]))
+                aes128param = MATH_AES128_CBC_COUNT;
+            else {
+                printf("[BLOBPAK] invalid body aes param\n");
+                return -1;
+            }
             i -= -1;
         }
     }
@@ -542,33 +564,33 @@ int main(int argc, char* argv[]) {
     if (ouput != OUPUT_STDOUT)
         printf(VER_STRING "\n");
 
-    if (blobmath_x_initDefault(version, hash_param) < 0) {
+    if (blobmath_x_initDefault(version, hash_param, aes128param) < 0) {
         printf("[BLOBPAK] init failed\n");
         return -1;
     }
 
     int ret = -8;
-    if (!strcmp("del", argv[2]))
-        ret = delEntry(argv[3], name_salt, argv[1], iput, ouput);
-    else if (!strcmp("add", argv[2])) {
+    if (!strcmp("del", op))
+        ret = delEntry(name, name_salt, blob, iput, ouput);
+    else if (!strcmp("add", op)) {
         if (replace) {
-            ret = delEntry(argv[3], name_salt, argv[1], iput, OUPUT_FILE);  // ignore ret
+            ret = delEntry(name, name_salt, blob, iput, OUPUT_FILE);  // ignore ret
             printf("[BLOBPAK] del %s 0x%X\n", (ret < 0) ? "failed" : "ok", ret);
-            ret = addEntry(argv[3], name_salt, argv[4], argv[1], IPUT_FILE, OUPUT_FILE);
+            ret = addEntry(name, name_salt, password, password_len, blob, IPUT_FILE, OUPUT_FILE);
         } else
-            ret = addEntry(argv[3], name_salt, argv[4], argv[1], iput, ouput);
-    } else if (!strcmp("get", argv[2]))
-        ret = getEntry(argv[3], name_salt, argv[4], argv[1], iput, ouput);
+            ret = addEntry(name, name_salt, password, password_len, blob, iput, ouput);
+    } else if (!strcmp("get", op))
+        ret = getEntry(name, name_salt, password, password_len, blob, iput, ouput);
 
     if (ouput != OUPUT_STDOUT)
-        printf("[BLOBPAK] %s %s 0x%X\n", argv[2], (ret < 0) ? "failed" : "ok", ret);
+        printf("[BLOBPAK] %s %s 0x%X\n", op, (ret < 0) ? "failed" : "ok", ret);
 
     rand_blk_max = RANDOM_BLOCK_MAX_SIZE;
     enchdr = 0;
     cleanup(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);  // lemme have some fun
     if (argc >= 5)
-        memset((void*)argv[4], 0xFF, strlen(argv[4]));
-    memset((void*)argv[3], 0xFF, strlen(argv[3]));
+        memset((void*)password, 0xFF, password_len);
+    memset((void*)name, 0xFF, strlen(name));
     if (name_salt)
         memset((void*)name_salt, 0xFF, strlen(name_salt));
     if (password_salt)

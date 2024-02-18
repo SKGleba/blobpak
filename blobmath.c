@@ -14,11 +14,13 @@
 #include "sha.c"
 
 #define MATH_VERSIO_N(M, m) (((M) << 16) | (m))
-enum MATH_HASH_PARAM { MATH_HASH_SHA1, MATH_HASH_SHA1_SHA256, MATH_HASH_SHA1_AES_SHA256 };
+enum MATH_HASH_PARAM { MATH_HASH_DEFAULT, MATH_HASH_SHA1, MATH_HASH_SHA1_SHA256, MATH_HASH_SHA1_AES_SHA256 };
+enum MATH_AES_PARAM { MATH_AES_DEFAULT, MATH_AES128_CBC, MATH_AES128_CBC_COUNT };
 
 int (*blobmath_i_rand32)(void) = NULL;
 int (*blobmath_i_hash160)(uint8_t* out, const uint8_t* in, uint32_t size) = NULL;
 uint32_t (*blobmath_x_encryptEntryDataSize)(uint32_t size, char* entryName) = NULL;
+void (*blobmath_x_cryptData128)(uint8_t* key, uint8_t* iv, uint8_t* data, uint32_t len, int encrypt) = NULL;
 
 /**
  * @brief Calculates the data encryption key and initialization vector (IV) for encryption.
@@ -29,11 +31,12 @@ uint32_t (*blobmath_x_encryptEntryDataSize)(uint32_t size, char* entryName) = NU
  *  * the noise64 field of the entry.
  *
  * @param inKey The input key/password used for encryption.
+ * @param inKeyLen The length of the input key/password (strlen won't work due to salting)
  * @param outKey The output buffer to store the data encryption key.
  * @param outIV The output buffer to store the initialization vector.
  * @param entry The entry containing set enc_size and noise64 fields.
  */
-void blobmath_x_calculateDataKey(char* inKey, void* outKey, void* outIV, entry_t* entry) {
+void blobmath_x_calculateDataKey(char* inKey, int inKeyLen, void* outKey, void* outIV, entry_t* entry) {
     unsigned char inKeyHash[20];  // password hash160, first 16 bytes will be the data enc key
     unsigned char dataIV[16];     // resulting data encryption iv
 
@@ -41,7 +44,7 @@ void blobmath_x_calculateDataKey(char* inKey, void* outKey, void* outIV, entry_t
     memset(dataIV, 0, 16);
 
     // calc enc key
-    blobmath_i_hash160(inKeyHash, inKey, strlen(inKey));
+    blobmath_i_hash160(inKeyHash, inKey, inKeyLen);
 
     // calc enc iv
     *(uint32_t*)dataIV = crc32(entry->enc_size, &entry->noise64, 8);
@@ -91,7 +94,7 @@ int blobmath_x_cryptEntryTOC(enc_entry_t* entry, char* entryName, char* entryNam
     if (encrypt)
         entry->toc_dec.hash_partial = crc32(entry->toc_dec.noise64, &tocKey[16], 4);
 
-    aes_cbc(tocKey, entry->iv, entry->toc_enc, 16, encrypt);
+    blobmath_x_cryptData128(tocKey, entry->iv, entry->toc_enc, 16, encrypt);
 
     memset(tocKey, 0xFF, 16);
     memset(decryptedEntryID, 0xFF, DEC_ENTRY_ID_SIZE);
@@ -243,7 +246,7 @@ int blobmath_x_hash160_aes(uint8_t* out, const uint8_t* in, uint32_t size) {
     }
 
     // encrypt the hash
-    aes_cbc(tmp + SIZE_OF_SHA_256_HASH, tmp + SIZE_OF_SHA_256_HASH + AES_KEYLEN, tmp, SIZE_OF_SHA_256_HASH, 1);
+    blobmath_x_cryptData128(tmp + SIZE_OF_SHA_256_HASH, tmp + SIZE_OF_SHA_256_HASH + AES_KEYLEN, tmp, SIZE_OF_SHA_256_HASH, 1);
     memset(tmp + SIZE_OF_SHA_256_HASH, 0xFF, SIZE_OF_SHA_256_HASH);
 
     // final hash
@@ -269,6 +272,34 @@ int blobmath_x_hash160(uint8_t* out, const uint8_t* in, uint32_t size) {
 
     // second hash
     return sha1digest(out, tmp, SIZE_OF_SHA_256_HASH);
+}
+
+/**
+ * @brief Encrypts or decrypts data using AES-128 in CBC mode and a tweaked counter.
+ * The tweak is calculated as the CRC32 of the IV and the length of the data.
+ *
+ * @note This should discourage password brute force attacks over the entire blobpak.
+ * But i might have inadvertently weakened the AES-CBC by adding an additional XOR step...
+ *
+ * @todo Find a better way to generate a tweak, or allow the user to provide a tweak.
+ *
+ * @param key The encryption key.
+ * @param iv The initialization vector.
+ * @param data The data to be encrypted or decrypted.
+ * @param len The length of the data.
+ * @param encrypt Flag indicating whether to encrypt (1) or decrypt (0) the data.
+ */
+void blobmath_x_cryptData_AES128_CBC_COUNT_dfl(uint8_t* key, uint8_t* iv, uint8_t* data, uint32_t len, int encrypt) {
+    // this doesnt need to be unique/secure in theory
+    // still, should find a better way to do this
+    uint32_t tweak[4 + 1];
+    tweak[0] = crc32(0, iv, 4);
+    tweak[1] = crc32(0, iv + 4, 4);
+    tweak[2] = crc32(0, iv + 8, 4);
+    tweak[3] = crc32(0, iv + 12, 4);
+    tweak[4] = crc32(tweak[0] + tweak[1] + tweak[2] + tweak[3], &len, 4);
+
+    aes_cbc_count(key, iv, (uint8_t*)tweak, data, len, encrypt, tweak[4]);
 }
 
 /**
@@ -327,7 +358,7 @@ uint64_t blobmath_x_getNoise(void) {
  * @param hashParam The hashing algorithm of hash160, from the MATH_HASH_PARAM enum.
  * @return 0 if successful, otherwise an error code.
  */
-int blobmath_x_initDefault(int version, int hashParam) {
+int blobmath_x_initDefault(int version, int hashParam, int aesParam) {
     // TODO: something else
     srand(time(NULL));
     blobmath_i_rand32 = rand;
@@ -336,12 +367,18 @@ int blobmath_x_initDefault(int version, int hashParam) {
     switch (version) {
         case MATH_VERSIO_N(1, 0):
             blobmath_x_encryptEntryDataSize = blobmath_x_encryptEntryDataSize_1v0;
+            blobmath_i_hash160 = sha1digest;
+            blobmath_x_cryptData128 = aes_cbc;
             break;
         case MATH_VERSIO_N(1, 3):
             blobmath_x_encryptEntryDataSize = blobmath_x_encryptEntryDataSize_1v3;
+            blobmath_i_hash160 = blobmath_x_hash160;
+            blobmath_x_cryptData128 = aes_cbc;
             break;
         default:
             blobmath_x_encryptEntryDataSize = blobmath_x_encryptEntryDataSize_1v3;
+            blobmath_i_hash160 = blobmath_x_hash160;
+            blobmath_x_cryptData128 = aes_cbc;
             break;
     }
 
@@ -357,7 +394,17 @@ int blobmath_x_initDefault(int version, int hashParam) {
             blobmath_i_hash160 = blobmath_x_hash160_aes;
             break;
         default:
-            blobmath_i_hash160 = blobmath_x_hash160;
+            break;
+    }
+
+    switch (aesParam) {
+        case MATH_AES128_CBC:
+            blobmath_x_cryptData128 = aes_cbc;
+            break;
+        case MATH_AES128_CBC_COUNT:
+            blobmath_x_cryptData128 = blobmath_x_cryptData_AES128_CBC_COUNT_dfl;
+            break;
+        default:
             break;
     }
 

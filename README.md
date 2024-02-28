@@ -37,7 +37,6 @@ unorganized encrypted file container aiming to be indistinguishable from garbage
 
 # notes
 - this is a PoC
-- its not platform-specific
 - it is slow by design (unorganized, one-way hash)
 - the package size is limited to 4GB, but can have unlimited file/entry count
 - i strongly recommend extracting the data to a ramdisk so it cannot be scrapped from a disk image
@@ -45,5 +44,4 @@ unorganized encrypted file container aiming to be indistinguishable from garbage
 - all operating data is trashed upon program exit, should be safe from RAM freeze attacks
  
  # todo
- - windows threading
  - other languages

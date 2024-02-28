@@ -17,7 +17,7 @@
 enum MATH_HASH_PARAM { MATH_HASH_DEFAULT, MATH_HASH_SHA1, MATH_HASH_SHA1_SHA256, MATH_HASH_SHA1_AES_SHA256 };
 enum MATH_AES_PARAM { MATH_AES_DEFAULT, MATH_AES128_CBC, MATH_AES128_CBC_COUNT };
 
-int (*blobmath_i_rand32)(void) = NULL;
+uint32_t (*blobmath_i_rand32)(void) = NULL;
 int (*blobmath_i_hash160)(uint8_t* out, const uint8_t* in, uint32_t size) = NULL;
 uint32_t (*blobmath_x_encryptEntryDataSize)(uint32_t size, char* entryName) = NULL;
 void (*blobmath_x_cryptData128)(uint8_t* key, uint8_t* iv, uint8_t* data, uint32_t len, int encrypt) = NULL;
@@ -346,6 +346,24 @@ uint64_t blobmath_x_getNoise(void) {
 }
 
 /**
+ * Generates a 32-bit random number using the blobmath_x_rand32 algorithm.
+ * 
+ * @return The generated random number.
+ */
+uint32_t blobmath_x_rand32(void) {
+    uint32_t rand32 = 0;
+    get_randoms((uint8_t*)&rand32, 4);
+    if (!rand32) { // fallback
+        rand32 = rand();
+        for (int i = 0; i < 4; ++i) {
+            rand32 <<= 8;
+            rand32 |= rand() & 0xFF;
+        }
+    }
+    return rand32;
+}
+
+/**
  * @brief Initializes the blobmath "library".
  * The default settings are as follows:
  *  * rand32 is the standard c rand function.
@@ -359,9 +377,8 @@ uint64_t blobmath_x_getNoise(void) {
  * @return 0 if successful, otherwise an error code.
  */
 int blobmath_x_initDefault(int version, int hashParam, int aesParam) {
-    // TODO: something else
-    srand(time(NULL));
-    blobmath_i_rand32 = rand;
+    srand(time(NULL)); // initialize fallback rand
+    blobmath_i_rand32 = blobmath_x_rand32;
 
     // legacy support
     switch (version) {

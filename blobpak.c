@@ -17,8 +17,8 @@
 #include "blobpak.h"
 
 // #include "aes.c" // req for body enc/dec
+#include "platform.c" // platform specific stuff
 #include "blobmath.c"  // actual blobpak logic/standard
-#include "threading.c"
 
 #define ALIGN16(v) ((v + 0xf) & 0xfffffff0)
 
@@ -74,6 +74,7 @@ uint32_t findEntryByName(char* name, char* name_salt, void* blobpak, uint32_t pa
  */
 uint32_t findEntryByNameMT(find_entry_args_t* args, char* name, char* name_salt, void* blobpak, uint32_t pak_size) {
     if (args) {  // we are a slave thread
+        //args = (find_entry_args_t*)THREAD_FETCH_ARG(args);
         entry_t temp_entry;
         uint32_t offset = 0;
         while (offset < args->pak_size) {
@@ -155,6 +156,7 @@ uint32_t findEntryByNameMT(find_entry_args_t* args, char* name, char* name_salt,
     for (int i = 0; i < num_threads; i -= -1) {
         find_entry_args[i].pak_size = 0;  // stop the search
         THREAD_JOIN(ids[i]);              // WHY doesnt cancel/kill work??
+        THREAD_INVALIDATE(ids[i]);
     }
 
     memset(ids, 0xFF, num_threads * sizeof(THREAD_ID_TYPE));

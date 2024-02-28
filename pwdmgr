@@ -14,23 +14,23 @@ while true; do
         else entry_pwd=${cmd[2]};
         fi
     fi
-    if [ ${cmd[0]} == "view" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --view --enchdr --hashparam SHA256_AES_SHA1;
-    elif [ ${cmd[0]} == "lview" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --stdout --enchdr --hashparam SHA256_AES_SHA1 | less;
+    if [ ${cmd[0]} == "view" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --view --enchdr --hashparam SHA256_AES_SHA1 --threads 1;
+    elif [ ${cmd[0]} == "lview" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --stdout --enchdr --hashparam SHA256_AES_SHA1 --threads 1 | less;
     elif [ ${cmd[0]} == "add" ]; then
                 printf "${cmd[1]} (CTRL-D for EOF):\n";
                 entry_dat=$(</dev/stdin);
                 printf "\n";
-        echo "$entry_dat" | ./bpak $blobpak_ct add ${cmd[1]} $entry_pwd --stdin --enchdr --hashparam SHA256_AES_SHA1 --maxpad 524288;
-    elif [ ${cmd[0]} == "remove" ]; then ./bpak $blobpak_ct del ${cmd[1]} --enchdr --hashparam SHA256_AES_SHA1;
-    elif [ ${cmd[0]} == "setfile" ]; then ./bpak $blobpak_ct add ${cmd[1]} $entry_pwd --replace --enchdr --hashparam SHA256_AES_SHA1 --maxpad 524288;
-    elif [ ${cmd[0]} == "getfile" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --enchdr --hashparam SHA256_AES_SHA1;
+        echo "$entry_dat" | ./bpak $blobpak_ct add ${cmd[1]} $entry_pwd --stdin --enchdr --hashparam SHA256_AES_SHA1 --threads 1 --maxpad 524288;
+    elif [ ${cmd[0]} == "remove" ]; then ./bpak $blobpak_ct del ${cmd[1]} --enchdr --hashparam SHA256_AES_SHA1 --threads 1;
+    elif [ ${cmd[0]} == "setfile" ]; then ./bpak $blobpak_ct add ${cmd[1]} $entry_pwd --replace --enchdr --hashparam SHA256_AES_SHA1 --threads 1 --maxpad 524288;
+    elif [ ${cmd[0]} == "getfile" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --enchdr --hashparam SHA256_AES_SHA1 --threads 1;
     elif [ ${cmd[0]} == "change" ]; then
-        ./bpak $blobpak_ct del ${cmd[1]} --enchdr --hashparam SHA256_AES_SHA1;
+        ./bpak $blobpak_ct del ${cmd[1]} --enchdr --hashparam SHA256_AES_SHA1 --threads 1;
         printf "${cmd[1]} (CTRL-D for EOF):\n";
                 entry_dat=$(</dev/stdin);
                 printf "\n";
-        echo "$entry_dat" | ./bpak $blobpak_ct add ${cmd[1]} $entry_pwd --stdin --enchdr --hashparam SHA256_AES_SHA1 --maxpad 524288;
-    elif [ ${cmd[0]} == "grep" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --stdout --enchdr --hashparam SHA256_AES_SHA1 | grep -i ${cmd[2]};
+        echo "$entry_dat" | ./bpak $blobpak_ct add ${cmd[1]} $entry_pwd --stdin --enchdr --hashparam SHA256_AES_SHA1 --threads 1 --maxpad 524288;
+    elif [ ${cmd[0]} == "grep" ]; then ./bpak $blobpak_ct get ${cmd[1]} $entry_pwd --stdout --enchdr --hashparam SHA256_AES_SHA1 --threads 1 | grep -i ${cmd[2]};
     else echo "ERROR: bad cmd";
     fi
     status=$?;

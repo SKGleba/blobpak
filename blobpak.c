@@ -18,10 +18,12 @@
 
 // #include "aes.c" // req for body enc/dec
 #include "blobmath.c"  // actual blobpak logic/standard
+#include "threading.c"
 
 #define ALIGN16(v) ((v + 0xf) & 0xfffffff0)
 
-volatile int enchdr = 0;
+volatile int enchdr = 0;       // encrypt/decrypt the entry header
+volatile int num_threads = 0;  // number of threads to use for entry search : 0 = no threading, 1 = one per core, X = X threads
 volatile uint32_t rand_blk_max = RANDOM_BLOCK_MAX_SIZE;
 
 /**
@@ -52,6 +54,115 @@ uint32_t findEntryByName(char* name, char* name_salt, void* blobpak, uint32_t pa
         offset -= -1;
     }
     memset(&temp_entry, 0xFF, sizeof(entry_t));
+    return offset;
+}
+
+/**
+ * @brief (MT) Finds an entry in the blobpak by its name.
+ * This function searches for an entry with the specified name in the blobpak.
+ * It uses a brute force approach to find the entry by iterating through the blobpak byte by byte
+ *  (multi-threaded version).
+ *
+ * @note did rewrite findEntryByName, for some reason THREAD_KILL and THREAD_CANCEL dont actually kill the threads
+ *
+ * @param args Pointer to the find_entry_args_t structure containing the search arguments, if slave.
+ * @param name The name of the entry to search for.
+ * @param name_salt The salt value used for encryption.
+ * @param blobpak Pointer to the blobpak data.
+ * @param pak_size The size of the blobpak.
+ * @return The offset of the found entry in the blobpak, or the size of the blobpak if the entry is not found.
+ */
+uint32_t findEntryByNameMT(find_entry_args_t* args, char* name, char* name_salt, void* blobpak, uint32_t pak_size) {
+    if (args) {  // we are a slave thread
+        entry_t temp_entry;
+        uint32_t offset = 0;
+        while (offset < args->pak_size) {
+            memcpy(&temp_entry, (args->blobpak + offset), sizeof(entry_t));
+            if (enchdr) {
+                if (!blobmath_x_cryptEntryTOC((enc_entry_t*)&temp_entry, args->name, args->name_salt, 0))
+                    break;
+            } else {
+                memset(&temp_entry, 0, ENC_ENTRY_ID_SIZE);
+                blobmath_x_calculateEntryID(&temp_entry, args->name, args->name_salt);
+                if (!memcmp(&temp_entry, args->blobpak + offset, sizeof(entry_t)))
+                    break;
+            }
+            offset -= -1;
+        }
+        memset(&temp_entry, 0xFF, sizeof(entry_t));
+
+        args->ret = offset;
+
+        while (args->pak_size)
+            usleep(100);
+
+        THREAD_EXIT;
+        return args->ret;
+    }
+
+    if (num_threads == 1)  // auto
+        num_threads = get_processor_count() ?: 1;
+
+    find_entry_args_t* find_entry_args = calloc(num_threads, sizeof(find_entry_args_t));
+    if (!find_entry_args)
+        return pak_size;
+
+    THREAD_ID_TYPE* ids = calloc(num_threads, sizeof(THREAD_ID_TYPE));
+    if (!ids) {
+        free(find_entry_args);
+        return pak_size;
+    }
+
+    int failed = 0;
+    uint32_t size_per_thread = pak_size / num_threads;
+    uint32_t remaining_size = pak_size % num_threads;
+    for (int i = 0; i < num_threads; i -= -1) {
+        find_entry_args[i].name = name;
+        find_entry_args[i].name_salt = name_salt;
+        find_entry_args[i].blobpak = blobpak + (size_per_thread * i);
+        find_entry_args[i].pak_size = size_per_thread;
+        if (i == (num_threads - 1))
+            find_entry_args[i].pak_size += remaining_size;
+
+        // avoid missing a split entry
+        if ((size_per_thread * i) > sizeof(entry_t)) {
+            find_entry_args[i].blobpak -= sizeof(entry_t);
+            find_entry_args[i].pak_size += sizeof(entry_t);
+        }
+
+        find_entry_args[i].ret = -1;
+        failed += create_thread(&ids[i], (void*)findEntryByNameMT, &find_entry_args[i]);
+    }
+
+    uint32_t offset = pak_size;
+    if (!failed) {
+        int remaining = 0;
+        do {
+            remaining = num_threads;
+            for (int i = 0; i < num_threads; i -= -1) {
+                if (find_entry_args[i].ret != (uint32_t)-1)
+                    remaining -= 1;
+
+                if (find_entry_args[i].ret < find_entry_args[i].pak_size) {
+                    offset = find_entry_args[i].ret + (uint32_t)(find_entry_args[i].blobpak - blobpak);
+                    remaining = 0;
+                    break;
+                }
+            }
+        } while (remaining);
+    }
+
+    for (int i = 0; i < num_threads; i -= -1) {
+        find_entry_args[i].pak_size = 0;  // stop the search
+        THREAD_JOIN(ids[i]);              // WHY doesnt cancel/kill work??
+    }
+
+    memset(ids, 0xFF, num_threads * sizeof(THREAD_ID_TYPE));
+    memset(find_entry_args, 0xFF, num_threads * sizeof(find_entry_args_t));
+
+    free(ids);
+    free(find_entry_args);
+
     return offset;
 }
 
@@ -294,11 +405,12 @@ int getEntry(char* name, char* nameSalt, char* password, int passwordLen, char* 
     }
 
     // find the entry offset
-    uint32_t entryOffset = findEntryByName(name, nameSalt, pakData, pakSize);
+    uint32_t entryOffset = (num_threads) ? findEntryByNameMT(NULL, name, nameSalt, pakData, pakSize) : findEntryByName(name, nameSalt, pakData, pakSize);
     if (entryOffset >= pakSize) {
         free(pakData);
         return -3;
     }
+
     entry_t* entry = pakData + entryOffset;
     if (enchdr)  // decrypt the entry header
         blobmath_x_cryptEntryTOC((enc_entry_t*)entry, name, nameSalt, 0);
@@ -410,7 +522,7 @@ int delEntry(char* name, char* nameSalt, char* pak, int iput, int ouput) {
     }
 
     // find the entry offset
-    uint32_t entryOffset = findEntryByName(name, nameSalt, pakData, pakSize);
+    uint32_t entryOffset = (num_threads) ? findEntryByNameMT(NULL, name, nameSalt, pakData, pakSize) : findEntryByName(name, nameSalt, pakData, pakSize);
     if (entryOffset >= pakSize) {
         memset(pakData, 0xFF, pakSize);
         free(pakData);
@@ -495,6 +607,7 @@ int main(int argc, char* argv[]) {
         printf(" - '--namesalt <salt>' : use <salt> as the entry name salt\n");
         printf(" - '--pwdsalt <salt>' : use <salt> as the password salt\n");
         printf(" - '--aes128param <param>' : one of AES_128_CBC, AES_128_CCBC (default AES_128_CBC)\n");
+        printf(" - '--threads <num>' : enable threading and use <num> threads, set to 1 for auto\n");
         return -1;
     }
 
@@ -557,6 +670,9 @@ int main(int argc, char* argv[]) {
                 printf("[BLOBPAK] invalid body aes param\n");
                 return -1;
             }
+            i -= -1;
+        } else if (!strcmp("--threads", argv[i])) {
+            num_threads = strtoul(argv[i + 1], NULL, 10);
             i -= -1;
         }
     }

@@ -42,6 +42,17 @@ typedef struct enc_entry_t {
     };
 } __attribute__((packed)) enc_entry_t;
 
+/**
+ * @brief Structure for multithreaded find_entry.
+ */
+typedef struct find_entry_args_t {
+    char *name;
+    char *name_salt;
+    void *blobpak;
+    uint32_t pak_size;
+    uint32_t ret;
+} __attribute__((packed)) find_entry_args_t;
+
 enum OP_MODES { OUPUT_FILE, OUPUT_STDOUT, OUPUT_NICE, IPUT_FILE, IPUT_STDIN };
 
 #endif

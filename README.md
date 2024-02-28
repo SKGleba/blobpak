@@ -21,6 +21,8 @@ unorganized encrypted file container aiming to be indistinguishable from garbage
   - '--enchdr' : encrypt the entry header
   - '--namesalt [salt]' : use [salt] as the entry name xor salt
   - '--pwdsalt [salt]' : use [salt] as the password xor salt
+  - '--aes128param [param]' : one of AES_128_CBC, AES_128_CCBC (default AES_128_CBC)
+  - '--threads [num]' : enable threading and use [num] threads, set to 1 for auto
 
 # data layout
 - entries are appended to the main pak consecutively one after another
@@ -43,6 +45,5 @@ unorganized encrypted file container aiming to be indistinguishable from garbage
 - all operating data is trashed upon program exit, should be safe from RAM freeze attacks
  
  # todo
- - threads
+ - windows threading
  - other languages
- - more sanity checks

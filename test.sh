@@ -1,7 +1,7 @@
 BLOBPAK_BIN="./blobpak"
-BLOBPAK_INPUTS=inputs
-BLOBPAK_OUTPUTS=outputs
-BLOBPAK_RESULTS=results
+BLOBPAK_INPUTS=test_inputs
+BLOBPAK_OUTPUTS=test_outputs
+BLOBPAK_RESULTS=test_results
 DFL_PASSWORD='quite_strong_and_long_password'
 TEST_PARAMS=("--math1v0" "--maxpad 4096" "--hashparam SHA256_AES_SHA1" "--enchdr" "--namesalt random_test_name_salt" "--pwdsalt very_salty_pwd_addon" "--aes128param AES_128_CCBC" "--maxpad 8192 --hashparam SHA256_AES_SHA1 --enchdr --namesalt random_test_name_salt --pwdsalt very_salty_pwd_addon --aes128param AES_128_CCBC")
 

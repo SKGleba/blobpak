@@ -26,7 +26,7 @@ unorganized encrypted file container aiming to be indistinguishable from garbage
 
 # data layout
 - entries are appended to the main pak consecutively one after another
-- each entry starts with a random-sized block of random data
+- each entry starts and ends with a random-sized block of random data
 - after the random data block there is an entry header that contains the entry ID and size hashes
 - the encrypted entry data is stored after the header
 

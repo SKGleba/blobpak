@@ -207,9 +207,12 @@ uint32_t findEntryDataSize(uint32_t encryptedEntryDataSize, char* entryName, uin
  */
 // create an entry
 uint32_t createEntry(uint32_t entryDataSize, char* password, int passwordLen, char* entryName, char* entryNameSalt, void* entryStart, void** newEntryStart) {
-    int randomBlockSize = (blobmath_i_rand32() % rand_blk_max) + 1;
-    uint32_t entrySize = ALIGN16(entryDataSize) + sizeof(entry_t) + randomBlockSize;
-    void* entry = entryStart + (rand_blk_max - randomBlockSize);
+    int randomPreBlockSize = (blobmath_i_rand32() % rand_blk_max) + 1;
+    int randomPostBlockSize = (blobmath_i_rand32() % rand_blk_max) + 1;
+    if ((randomPreBlockSize + ALIGN16(entryDataSize) + sizeof(entry_t) + ALIGN16(randomPostBlockSize)) > ((2 * rand_blk_max) + sizeof(entry_t) + ALIGN16(entryDataSize)))
+        randomPostBlockSize = (randomPostBlockSize > 0x10) ? (randomPostBlockSize - 0x10) : 0; // avoid overflow
+    uint32_t entrySize = ALIGN16(entryDataSize) + sizeof(entry_t) + randomPreBlockSize + randomPostBlockSize;
+    void* entry = entryStart + (rand_blk_max - randomPreBlockSize);
 
     // add a random data block of random size <= rand_blk_max before the actual entry
     uint8_t randomBlockKey[16], randomBlockIV[16];
@@ -217,10 +220,17 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, int passwordLen, ch
     *(uint64_t*)(randomBlockKey + 8) = blobmath_x_getNoise();
     *(uint64_t*)randomBlockIV = blobmath_x_getNoise();
     *(uint64_t*)(randomBlockIV + 8) = blobmath_x_getNoise();
-    blobmath_x_cryptData128(randomBlockKey, randomBlockIV, entry, ALIGN16(randomBlockSize), 1);
+    blobmath_x_cryptData128(randomBlockKey, randomBlockIV, entry, ALIGN16(randomPreBlockSize), 1);
+
+    // add a random data block of random size <= rand_blk_max after the actual entry
+    *(uint64_t*)randomBlockKey = blobmath_x_getNoise();
+    *(uint64_t*)(randomBlockKey + 8) = blobmath_x_getNoise();
+    *(uint64_t*)randomBlockIV = blobmath_x_getNoise();
+    *(uint64_t*)(randomBlockIV + 8) = blobmath_x_getNoise();
+    blobmath_x_cryptData128(randomBlockKey, randomBlockIV, entry + randomPreBlockSize + ALIGN16(entryDataSize) + sizeof(entry_t), ALIGN16(randomPostBlockSize), 1);
 
     // create the encrypted "header"
-    entry_t* entryHead = entry + randomBlockSize;
+    entry_t* entryHead = entry + randomPreBlockSize;
     memset(entryHead, 0, sizeof(entry_t));
     entryHead->noise64 = blobmath_x_getNoise();
     entryHead->enc_size = blobmath_x_encryptEntryDataSize(entryDataSize, entryName);
@@ -232,7 +242,7 @@ uint32_t createEntry(uint32_t entryDataSize, char* password, int passwordLen, ch
 
     // add the decrypted data and encrypt it there
     uint8_t dataKey[16], dataIV[16];
-    void* entryData = entry + randomBlockSize + sizeof(entry_t);
+    void* entryData = entry + randomPreBlockSize + sizeof(entry_t);
     blobmath_x_calculateDataKey(password, passwordLen, dataKey, dataIV, entryHead);
     blobmath_x_cryptData128(dataKey, dataIV, entryData, ALIGN16(entryDataSize), 1);
 
@@ -270,7 +280,7 @@ int addEntry(char* name, char* nameSalt, char* password, int passwordLen, char* 
     uint32_t fileSize = 0;
     void* fileData = NULL;
 
-    void* entry = malloc(rand_blk_max + sizeof(entry_t));
+    void* entry = malloc((2 * rand_blk_max) + sizeof(entry_t));
     if (!entry)
         return -2;
 
@@ -280,7 +290,7 @@ int addEntry(char* name, char* nameSalt, char* password, int passwordLen, char* 
             return -1;
         fseek(fp, 0L, SEEK_END);
         fileSize = ftell(fp);
-        entry = realloc(entry, ALIGN16(fileSize) + rand_blk_max + sizeof(entry_t));
+        entry = realloc(entry, ALIGN16(fileSize) + (2 * rand_blk_max) + sizeof(entry_t));
         if (!entry) {
             fclose(fp);
             return -2;
@@ -293,14 +303,14 @@ int addEntry(char* name, char* nameSalt, char* password, int passwordLen, char* 
     } else {  // read the data from stdin
         void* tmp_p = NULL;
         uint32_t tmp_l = 0;
-        entry = realloc(entry, STDIN_BUF_INCR + rand_blk_max + sizeof(entry_t));
+        entry = realloc(entry, STDIN_BUF_INCR + (2 * rand_blk_max) + sizeof(entry_t));
         if (!entry)
             return -2;
         fileData = entry + rand_blk_max + sizeof(entry_t);
         // memset(fileData, 0, STDIN_BUF_INCR); // dont memset, helps the random block
         while (tmp_l = read(fileno(stdin), fileData + fileSize, STDIN_BUF_INCR), tmp_l == STDIN_BUF_INCR) {
             fileSize += STDIN_BUF_INCR;
-            tmp_p = realloc(entry, fileSize + STDIN_BUF_INCR + rand_blk_max + sizeof(entry_t));
+            tmp_p = realloc(entry, fileSize + STDIN_BUF_INCR + (2 * rand_blk_max) + sizeof(entry_t));
             if (!tmp_p) {
                 memset(fileData, 0xFF, fileSize);
                 return -2;
@@ -692,9 +702,9 @@ int main(int argc, char* argv[]) {
         ret = delEntry(name, name_salt, blob, iput, ouput);
     else if (!strcmp("add", op)) {
         if (replace) {
-            ret = delEntry(name, name_salt, blob, iput, OUPUT_FILE);  // ignore ret
+            ret = delEntry(name, name_salt, blob, IPUT_FILE, OUPUT_FILE);  // ignore ret
             printf("[BLOBPAK] del %s 0x%X\n", (ret < 0) ? "failed" : "ok", ret);
-            ret = addEntry(name, name_salt, password, password_len, blob, IPUT_FILE, OUPUT_FILE);
+            ret = addEntry(name, name_salt, password, password_len, blob, iput, OUPUT_FILE);
         } else
             ret = addEntry(name, name_salt, password, password_len, blob, iput, ouput);
     } else if (!strcmp("get", op))
